@@ -333,7 +333,11 @@ function checkEnableAnalyse(){
 
 // ── API connection ─────────────────────────────────────────────────────────
 async function tryConnectAPI(){
-  const urls=['/status','http://localhost:7001/status','http://127.0.0.1:7001/status'];
+  // On Railway: use relative URL. Locally: try localhost.
+  const isLocal = window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1';
+  const urls = isLocal
+    ? ['/status', 'http://localhost:7001/status', 'http://127.0.0.1:7001/status']
+    : ['/status'];
   for(const url of urls){
     try{
       const r=await fetch(url,{signal:AbortSignal.timeout(3000)});
@@ -569,7 +573,8 @@ async function runAnalysis(){
       const symStr=validSyms.join(',');
 
       // Today
-      const r=await fetch('/prices?symbols='+encodeURIComponent(symStr));
+      const base = (window.location.hostname==='localhost'||window.location.hostname==='127.0.0.1') ? 'http://localhost:7001' : '';
+      const r=await fetch(base+'/prices?symbols='+encodeURIComponent(symStr));
       const d=await r.json();
       bhavToday={};
       for(const [sym,entry] of Object.entries(d.found||{}))
@@ -578,7 +583,7 @@ async function runAnalysis(){
       // Week
       bhavWeek={};
       try{
-        const rw=await fetch('/prices/week?symbols='+encodeURIComponent(symStr));
+        const rw=await fetch(base+'/prices/week?symbols='+encodeURIComponent(symStr));
         const dw=await rw.json();
         for(const [sym,entry] of Object.entries(dw.found||{}))
           bhavWeek[sym]={close:entry.close};
@@ -587,7 +592,7 @@ async function runAnalysis(){
       // Month
       bhavMonth={};
       try{
-        const rm=await fetch('/prices/month?symbols='+encodeURIComponent(symStr));
+        const rm=await fetch(base+'/prices/month?symbols='+encodeURIComponent(symStr));
         const dm=await rm.json();
         for(const [sym,entry] of Object.entries(dm.found||{}))
           bhavMonth[sym]={close:entry.close};
