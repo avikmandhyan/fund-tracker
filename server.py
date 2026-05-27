@@ -10,7 +10,7 @@ from pathlib import Path
 from flask import Flask, jsonify, request, Response
 
 PORT     = int(os.environ.get("PORT", 7001))
-DATA_DIR = Path(__file__).parent / "data"
+DATA_DIR = Path(__file__).parent 
 HTML_FILE = Path(__file__).parent / "fund-tracker.html"
 LOG_FILE  = Path(__file__).parent / "server.log"
 
