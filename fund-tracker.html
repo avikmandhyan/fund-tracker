@@ -1,0 +1,1372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Fund Portfolio Tracker</title>
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js">
+// ── Local API (optional) ─────────────────────────────────────────────────
+// When served from Flask (localhost:7001), API calls are same-origin — no CORS
+const API = window.location.port ? '' : null;  // relative URL when on a server
+
+let apiReady = false;
+
+async function tryConnectAPI() {
+  const URLS = ['http://localhost:7001/status', 'http://127.0.0.1:7001/status'];
+  for (const url of URLS) {
+    try {
+      const r = await fetch(url, {signal: AbortSignal.timeout(3000)});
+      if (!r.ok) continue;
+      const d = await r.json();
+      if ((d.stocks_loaded||0) < 100) { setTimeout(tryConnectAPI, 3000); return; }
+      apiReady = true;
+      // Update status panel
+      document.getElementById('apiDot').style.background = 'var(--green)';
+      document.getElementById('apiStatusTxt').textContent = 'Connected — prices update automatically every trading day';
+      document.getElementById('apiStatusTxt').style.color = 'var(--green)';
+      document.getElementById('bhavBadge').textContent = d.stocks_loaded.toLocaleString() + ' stocks ✓';
+      document.getElementById('bhavBadge').className = 'badge badge-ok';
+      document.getElementById('apiDetails').style.display = 'block';
+      document.getElementById('dateToday').textContent  = d.dates&&d.dates.today  || '—';
+      document.getElementById('dateWeek').textContent   = d.dates&&d.dates.week   || '—';
+      document.getElementById('dateMonth').textContent  = d.dates&&d.dates.month  || '—';
+      document.getElementById('stockCount').textContent = d.stocks_loaded.toLocaleString();
+      document.getElementById('apiErrorBox').style.display = 'none';
+      document.getElementById('btnRetry').style.display = 'none';
+      checkEnableAnalyse();
+      return;
+    } catch(e) {}
+  }
+  // Show error after 2 failed attempts
+  failCount = (failCount||0) + 1;
+  if (failCount >= 2) {
+    document.getElementById('apiDot').style.background = 'var(--red)';
+    document.getElementById('apiStatusTxt').textContent = 'Could not connect to local server';
+    document.getElementById('apiStatusTxt').style.color = 'var(--rt)';
+    document.getElementById('bhavBadge').textContent = 'offline';
+    document.getElementById('bhavBadge').className = 'badge badge-err';
+    document.getElementById('apiErrorBox').style.display = 'block';
+    document.getElementById('btnRetry').style.display = 'inline-block';
+    return;
+  }
+  setTimeout(tryConnectAPI, 4000);
+}
+
+let failCount = 0;
+function retryConnect() {
+  failCount = 0;
+  document.getElementById('apiDot').style.background = 'var(--amber)';
+  document.getElementById('apiStatusTxt').textContent = 'Retrying…';
+  document.getElementById('apiStatusTxt').style.color = 'var(--t2)';
+  document.getElementById('apiErrorBox').style.display = 'none';
+  document.getElementById('btnRetry').style.display = 'none';
+  tryConnectAPI();
+}
+
+// Boot: try API
+setTimeout(tryConnectAPI, 800);
+
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js">
+// ── Local API (optional) ─────────────────────────────────────────────────
+// When served from Flask (localhost:7001), API calls are same-origin — no CORS
+const API = window.location.port ? '' : null;  // relative URL when on a server
+
+let apiReady = false;
+
+async function tryConnectAPI() {
+  try {
+    const r = await fetch('/status', {signal: AbortSignal.timeout(2000)});
+    if (!r.ok) return;
+    const d = await r.json();
+    if ((d.stocks_loaded||0) < 100) {
+      // Still loading — retry in 3 seconds
+      setTimeout(tryConnectAPI, 3000);
+      return;
+    }
+    apiReady = true;
+    log.info && log.info('API ready');
+    // Update badge
+    document.getElementById('bhavBadge').textContent = d.stocks_loaded.toLocaleString() + ' stocks via API ✓';
+    document.getElementById('bhavBadge').className = 'badge badge-ok';
+    // Update bhav panel
+    document.getElementById('bhavDrop').style.display = 'none';
+    document.getElementById('bhavPills').innerHTML =
+      '<div class="file-pill"><i class="ti ti-robot"></i>Live prices from NSE bhavcopy — auto-loaded<br>' +
+      '<small style="opacity:.7">Today: ' + (d.dates&&d.dates.today||'loading…') +
+      '  Week: ' + (d.dates&&d.dates.week||'—') +
+      '  Month: ' + (d.dates&&d.dates.month||'—') + '</small></div>';
+    document.querySelectorAll('.bhav-step').forEach(el => el.style.display = 'none');
+    checkEnableAnalyse();
+  } catch(e) {
+    // Not on a server — manual bhavcopy upload is fine
+  }
+}
+
+// Run analysis using API prices when available
+const _origRunAnalysis = runAnalysis;
+async function runAnalysis() {
+  if (!apiReady) { _origRunAnalysis(); return; }
+  clearNotes();
+
+  // Build portfolio from file
+  const getCM = f => { const el = document.getElementById('cm_'+f); return el&&el.value!=='' ? parseInt(el.value) : undefined; };
+  const symIdx=getCM('symbol'), nameIdx=getCM('name'), wtIdx=getCM('weight'), mvIdx=getCM('mv');
+  if (symIdx===undefined||wtIdx===undefined) { errNote('Please map the Symbol/ISIN and Weight columns.'); return; }
+
+  const get=(r,idx)=>idx!==undefined?String(r[idx]||'').trim():'';
+  portfolio = rawRows.map((r,i) => {
+    const rawSym=get(r,symIdx), rawName=get(r,nameIdx)||rawSym;
+    if (/\d+\.\d+%/.test(rawName)||/treps|t-bill|repo|treasury/i.test(rawName)) return null;
+    const sym=resolveSymbol(rawSym);
+    if (!sym) return null;
+    const rawW=get(r,wtIdx).replace(/[%,\s]/g,'');
+    let weight=parseFloat(rawW)||0;
+    if (weight>0&&weight<1) weight=weight*100;
+    const mv_cr=parseFloat(get(r,mvIdx).replace(/[,\s]/g,''))||0;
+    if (weight<=0) return null;
+    return {index:i+1, symbol:sym, name:rawName, weight, mv_cr};
+  }).filter(Boolean);
+
+  if (!portfolio.length) { errNote('No valid equity rows found. Check column mappings.'); return; }
+
+  st('Fetching prices from local API…');
+  try {
+    // Only send valid NSE symbols (no spaces, no fund names)
+    const validSyms = [...new Set(portfolio.map(s => s.symbol).filter(s => s && !/\s/.test(s) && s.length <= 20))];
+    const symStr = validSyms.join(',');
+
+    // Fetch today's prices
+    const r = await fetch('http://localhost:7001/prices?symbols=' + encodeURIComponent(symStr));
+    const d = await r.json();
+    bhavToday = {};
+    for (const [sym, entry] of Object.entries(d.found||{})) {
+      bhavToday[sym] = {close: entry.close, prevClose: entry.prevClose};
+    }
+
+    // Fetch week prices
+    bhavWeek = {};
+    try {
+      const rw = await fetch('http://localhost:7001/prices/week?symbols=' + encodeURIComponent(symStr));
+      const dw = await rw.json();
+      for (const [sym, entry] of Object.entries(dw.found||{})) {
+        bhavWeek[sym] = {close: entry.close};
+      }
+    } catch(e) {}
+
+    // Fetch month prices
+    bhavMonth = {};
+    try {
+      const monthUrl = 'http://localhost:7001/prices/month?symbols=' + encodeURIComponent(symStr);
+      const rm = await fetch(monthUrl);
+      const dm = await rm.json();
+
+      for (const [sym, entry] of Object.entries(dm.found||{})) {
+        bhavMonth[sym] = {close: entry.close};
+      }
+    } catch(e) { console.error('Month fetch error:', e.message); }
+
+    stOff();
+    if (!Object.keys(bhavToday).length) { errNote('No prices matched. Check symbols.'); return; }
+    render();
+    document.getElementById('results').classList.add('show');
+    document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
+  } catch(e) {
+    stOff(); errNote('API fetch failed: ' + e.message);
+  }
+}
+
+// Boot: try API silently
+setTimeout(tryConnectAPI, 500);
+
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js">
+// ── Local API (optional) ─────────────────────────────────────────────────
+// When served from Flask (localhost:7001), API calls are same-origin — no CORS
+const API = window.location.port ? '' : null;  // relative URL when on a server
+
+let apiReady = false;
+
+async function tryConnectAPI() {
+  try {
+    const r = await fetch('/status', {signal: AbortSignal.timeout(2000)});
+    if (!r.ok) return;
+    const d = await r.json();
+    if ((d.stocks_loaded||0) < 100) {
+      // Still loading — retry in 3 seconds
+      setTimeout(tryConnectAPI, 3000);
+      return;
+    }
+    apiReady = true;
+    log.info && log.info('API ready');
+    // Update badge
+    document.getElementById('bhavBadge').textContent = d.stocks_loaded.toLocaleString() + ' stocks via API ✓';
+    document.getElementById('bhavBadge').className = 'badge badge-ok';
+    // Update bhav panel
+    document.getElementById('bhavDrop').style.display = 'none';
+    document.getElementById('bhavPills').innerHTML =
+      '<div class="file-pill"><i class="ti ti-robot"></i>Live prices from NSE bhavcopy — auto-loaded<br>' +
+      '<small style="opacity:.7">Today: ' + (d.dates&&d.dates.today||'loading…') +
+      '  Week: ' + (d.dates&&d.dates.week||'—') +
+      '  Month: ' + (d.dates&&d.dates.month||'—') + '</small></div>';
+    document.querySelectorAll('.bhav-step').forEach(el => el.style.display = 'none');
+    checkEnableAnalyse();
+  } catch(e) {
+    // Not on a server — manual bhavcopy upload is fine
+  }
+}
+
+// Run analysis using API prices when available
+const _origRunAnalysis = runAnalysis;
+async function runAnalysis() {
+  if (!apiReady) { _origRunAnalysis(); return; }
+  clearNotes();
+
+  // Build portfolio from file
+  const getCM = f => { const el = document.getElementById('cm_'+f); return el&&el.value!=='' ? parseInt(el.value) : undefined; };
+  const symIdx=getCM('symbol'), nameIdx=getCM('name'), wtIdx=getCM('weight'), mvIdx=getCM('mv');
+  if (symIdx===undefined||wtIdx===undefined) { errNote('Please map the Symbol/ISIN and Weight columns.'); return; }
+
+  const get=(r,idx)=>idx!==undefined?String(r[idx]||'').trim():'';
+  portfolio = rawRows.map((r,i) => {
+    const rawSym=get(r,symIdx), rawName=get(r,nameIdx)||rawSym;
+    if (/\d+\.\d+%/.test(rawName)||/treps|t-bill|repo|treasury/i.test(rawName)) return null;
+    const sym=resolveSymbol(rawSym);
+    if (!sym) return null;
+    const rawW=get(r,wtIdx).replace(/[%,\s]/g,'');
+    let weight=parseFloat(rawW)||0;
+    if (weight>0&&weight<1) weight=weight*100;
+    const mv_cr=parseFloat(get(r,mvIdx).replace(/[,\s]/g,''))||0;
+    if (weight<=0) return null;
+    return {index:i+1, symbol:sym, name:rawName, weight, mv_cr};
+  }).filter(Boolean);
+
+  if (!portfolio.length) { errNote('No valid equity rows found. Check column mappings.'); return; }
+
+  st('Fetching prices from local API…');
+  try {
+    // Only send valid NSE symbols (no spaces, no fund names)
+    const validSyms = [...new Set(portfolio.map(s => s.symbol).filter(s => s && !/\s/.test(s) && s.length <= 20))];
+    const symStr = validSyms.join(',');
+
+    // Fetch today's prices
+    const r = await fetch('http://localhost:7001/prices?symbols=' + encodeURIComponent(symStr));
+    const d = await r.json();
+    bhavToday = {};
+    for (const [sym, entry] of Object.entries(d.found||{})) {
+      bhavToday[sym] = {close: entry.close, prevClose: entry.prevClose};
+    }
+
+    // Fetch week prices
+    bhavWeek = {};
+    try {
+      const rw = await fetch('http://localhost:7001/prices/week?symbols=' + encodeURIComponent(symStr));
+      const dw = await rw.json();
+      for (const [sym, entry] of Object.entries(dw.found||{})) {
+        bhavWeek[sym] = {close: entry.close};
+      }
+    } catch(e) {}
+
+    // Fetch month prices
+    bhavMonth = {};
+    try {
+      const monthUrl = 'http://localhost:7001/prices/month?symbols=' + encodeURIComponent(symStr);
+      const rm = await fetch(monthUrl);
+      const dm = await rm.json();
+
+      for (const [sym, entry] of Object.entries(dm.found||{})) {
+        bhavMonth[sym] = {close: entry.close};
+      }
+    } catch(e) { console.error('Month fetch error:', e.message); }
+
+    stOff();
+    if (!Object.keys(bhavToday).length) { errNote('No prices matched. Check symbols.'); return; }
+    render();
+    document.getElementById('results').classList.add('show');
+    document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
+  } catch(e) {
+    stOff(); errNote('API fetch failed: ' + e.message);
+  }
+}
+
+// Boot: try API silently
+setTimeout(tryConnectAPI, 500);
+
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js">
+// ── Local API (optional) ─────────────────────────────────────────────────
+// When served from Flask (localhost:7001), API calls are same-origin — no CORS
+const API = window.location.port ? '' : null;  // relative URL when on a server
+
+let apiReady = false;
+
+async function tryConnectAPI() {
+  try {
+    const r = await fetch('/status', {signal: AbortSignal.timeout(2000)});
+    if (!r.ok) return;
+    const d = await r.json();
+    if ((d.stocks_loaded||0) < 100) {
+      // Still loading — retry in 3 seconds
+      setTimeout(tryConnectAPI, 3000);
+      return;
+    }
+    apiReady = true;
+    log.info && log.info('API ready');
+    // Update badge
+    document.getElementById('bhavBadge').textContent = d.stocks_loaded.toLocaleString() + ' stocks via API ✓';
+    document.getElementById('bhavBadge').className = 'badge badge-ok';
+    // Update bhav panel
+    document.getElementById('bhavDrop').style.display = 'none';
+    document.getElementById('bhavPills').innerHTML =
+      '<div class="file-pill"><i class="ti ti-robot"></i>Live prices from NSE bhavcopy — auto-loaded<br>' +
+      '<small style="opacity:.7">Today: ' + (d.dates&&d.dates.today||'loading…') +
+      '  Week: ' + (d.dates&&d.dates.week||'—') +
+      '  Month: ' + (d.dates&&d.dates.month||'—') + '</small></div>';
+    document.querySelectorAll('.bhav-step').forEach(el => el.style.display = 'none');
+    checkEnableAnalyse();
+  } catch(e) {
+    // Not on a server — manual bhavcopy upload is fine
+  }
+}
+
+// Run analysis using API prices when available
+const _origRunAnalysis = runAnalysis;
+async function runAnalysis() {
+  if (!apiReady) { _origRunAnalysis(); return; }
+  clearNotes();
+
+  // Build portfolio from file
+  const getCM = f => { const el = document.getElementById('cm_'+f); return el&&el.value!=='' ? parseInt(el.value) : undefined; };
+  const symIdx=getCM('symbol'), nameIdx=getCM('name'), wtIdx=getCM('weight'), mvIdx=getCM('mv');
+  if (symIdx===undefined||wtIdx===undefined) { errNote('Please map the Symbol/ISIN and Weight columns.'); return; }
+
+  const get=(r,idx)=>idx!==undefined?String(r[idx]||'').trim():'';
+  portfolio = rawRows.map((r,i) => {
+    const rawSym=get(r,symIdx), rawName=get(r,nameIdx)||rawSym;
+    if (/\d+\.\d+%/.test(rawName)||/treps|t-bill|repo|treasury/i.test(rawName)) return null;
+    const sym=resolveSymbol(rawSym);
+    if (!sym) return null;
+    const rawW=get(r,wtIdx).replace(/[%,\s]/g,'');
+    let weight=parseFloat(rawW)||0;
+    if (weight>0&&weight<1) weight=weight*100;
+    const mv_cr=parseFloat(get(r,mvIdx).replace(/[,\s]/g,''))||0;
+    if (weight<=0) return null;
+    return {index:i+1, symbol:sym, name:rawName, weight, mv_cr};
+  }).filter(Boolean);
+
+  if (!portfolio.length) { errNote('No valid equity rows found. Check column mappings.'); return; }
+
+  st('Fetching prices from local API…');
+  try {
+    // Only send valid NSE symbols (no spaces, no fund names)
+    const validSyms = [...new Set(portfolio.map(s => s.symbol).filter(s => s && !/\s/.test(s) && s.length <= 20))];
+    const symStr = validSyms.join(',');
+
+    // Fetch today's prices
+    const r = await fetch('http://localhost:7001/prices?symbols=' + encodeURIComponent(symStr));
+    const d = await r.json();
+    bhavToday = {};
+    for (const [sym, entry] of Object.entries(d.found||{})) {
+      bhavToday[sym] = {close: entry.close, prevClose: entry.prevClose};
+    }
+
+    // Fetch week prices
+    bhavWeek = {};
+    try {
+      const rw = await fetch('http://localhost:7001/prices/week?symbols=' + encodeURIComponent(symStr));
+      const dw = await rw.json();
+      for (const [sym, entry] of Object.entries(dw.found||{})) {
+        bhavWeek[sym] = {close: entry.close};
+      }
+    } catch(e) {}
+
+    // Fetch month prices
+    bhavMonth = {};
+    try {
+      const monthUrl = 'http://localhost:7001/prices/month?symbols=' + encodeURIComponent(symStr);
+      const rm = await fetch(monthUrl);
+      const dm = await rm.json();
+
+      for (const [sym, entry] of Object.entries(dm.found||{})) {
+        bhavMonth[sym] = {close: entry.close};
+      }
+    } catch(e) { console.error('Month fetch error:', e.message); }
+
+    stOff();
+    if (!Object.keys(bhavToday).length) { errNote('No prices matched. Check symbols.'); return; }
+    render();
+    document.getElementById('results').classList.add('show');
+    document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
+  } catch(e) {
+    stOff(); errNote('API fetch failed: ' + e.message);
+  }
+}
+
+// Boot: try API silently
+setTimeout(tryConnectAPI, 500);
+
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js">
+// ── Local API (optional) ─────────────────────────────────────────────────
+// When served from Flask (localhost:7001), API calls are same-origin — no CORS
+const API = window.location.port ? '' : null;  // relative URL when on a server
+
+let apiReady = false;
+
+async function tryConnectAPI() {
+  try {
+    const r = await fetch('/status', {signal: AbortSignal.timeout(2000)});
+    if (!r.ok) return;
+    const d = await r.json();
+    if ((d.stocks_loaded||0) < 100) {
+      // Still loading — retry in 3 seconds
+      setTimeout(tryConnectAPI, 3000);
+      return;
+    }
+    apiReady = true;
+    log.info && log.info('API ready');
+    // Update badge
+    document.getElementById('bhavBadge').textContent = d.stocks_loaded.toLocaleString() + ' stocks via API ✓';
+    document.getElementById('bhavBadge').className = 'badge badge-ok';
+    // Update bhav panel
+    document.getElementById('bhavDrop').style.display = 'none';
+    document.getElementById('bhavPills').innerHTML =
+      '<div class="file-pill"><i class="ti ti-robot"></i>Live prices from NSE bhavcopy — auto-loaded<br>' +
+      '<small style="opacity:.7">Today: ' + (d.dates&&d.dates.today||'loading…') +
+      '  Week: ' + (d.dates&&d.dates.week||'—') +
+      '  Month: ' + (d.dates&&d.dates.month||'—') + '</small></div>';
+    document.querySelectorAll('.bhav-step').forEach(el => el.style.display = 'none');
+    checkEnableAnalyse();
+  } catch(e) {
+    // Not on a server — manual bhavcopy upload is fine
+  }
+}
+
+// Run analysis using API prices when available
+const _origRunAnalysis = runAnalysis;
+async function runAnalysis() {
+  if (!apiReady) { _origRunAnalysis(); return; }
+  clearNotes();
+
+  // Build portfolio from file
+  const getCM = f => { const el = document.getElementById('cm_'+f); return el&&el.value!=='' ? parseInt(el.value) : undefined; };
+  const symIdx=getCM('symbol'), nameIdx=getCM('name'), wtIdx=getCM('weight'), mvIdx=getCM('mv');
+  if (symIdx===undefined||wtIdx===undefined) { errNote('Please map the Symbol/ISIN and Weight columns.'); return; }
+
+  const get=(r,idx)=>idx!==undefined?String(r[idx]||'').trim():'';
+  portfolio = rawRows.map((r,i) => {
+    const rawSym=get(r,symIdx), rawName=get(r,nameIdx)||rawSym;
+    if (/\d+\.\d+%/.test(rawName)||/treps|t-bill|repo|treasury/i.test(rawName)) return null;
+    const sym=resolveSymbol(rawSym);
+    if (!sym) return null;
+    const rawW=get(r,wtIdx).replace(/[%,\s]/g,'');
+    let weight=parseFloat(rawW)||0;
+    if (weight>0&&weight<1) weight=weight*100;
+    const mv_cr=parseFloat(get(r,mvIdx).replace(/[,\s]/g,''))||0;
+    if (weight<=0) return null;
+    return {index:i+1, symbol:sym, name:rawName, weight, mv_cr};
+  }).filter(Boolean);
+
+  if (!portfolio.length) { errNote('No valid equity rows found. Check column mappings.'); return; }
+
+  st('Fetching prices from local API…');
+  try {
+    // Only send valid NSE symbols (no spaces, no fund names)
+    const validSyms = [...new Set(portfolio.map(s => s.symbol).filter(s => s && !/\s/.test(s) && s.length <= 20))];
+    const symStr = validSyms.join(',');
+
+    // Fetch today's prices
+    const r = await fetch('http://localhost:7001/prices?symbols=' + encodeURIComponent(symStr));
+    const d = await r.json();
+    bhavToday = {};
+    for (const [sym, entry] of Object.entries(d.found||{})) {
+      bhavToday[sym] = {close: entry.close, prevClose: entry.prevClose};
+    }
+
+    // Fetch week prices
+    bhavWeek = {};
+    try {
+      const rw = await fetch('http://localhost:7001/prices/week?symbols=' + encodeURIComponent(symStr));
+      const dw = await rw.json();
+      for (const [sym, entry] of Object.entries(dw.found||{})) {
+        bhavWeek[sym] = {close: entry.close};
+      }
+    } catch(e) {}
+
+    // Fetch month prices
+    bhavMonth = {};
+    try {
+      const monthUrl = 'http://localhost:7001/prices/month?symbols=' + encodeURIComponent(symStr);
+      const rm = await fetch(monthUrl);
+      const dm = await rm.json();
+
+      for (const [sym, entry] of Object.entries(dm.found||{})) {
+        bhavMonth[sym] = {close: entry.close};
+      }
+    } catch(e) { console.error('Month fetch error:', e.message); }
+
+    stOff();
+    if (!Object.keys(bhavToday).length) { errNote('No prices matched. Check symbols.'); return; }
+    render();
+    document.getElementById('results').classList.add('show');
+    document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
+  } catch(e) {
+    stOff(); errNote('API fetch failed: ' + e.message);
+  }
+}
+
+// Boot: try API silently
+setTimeout(tryConnectAPI, 500);
+
+</script>
+<style>
+:root{
+  --bg:#f7f6f2;--surface:#fff;--surface2:#f0efe9;
+  --border:rgba(0,0,0,.08);--bm:rgba(0,0,0,.15);
+  --text:#1a1a18;--t2:#5c5c58;--t3:#9c9c96;
+  --green:#1D9E75;--gbg:#E1F5EE;--gt:#0F6E56;
+  --red:#E24B4A;--rbg:#FCEBEB;--rt:#A32D2D;
+  --amber:#BA7517;--abg:#FAEEDA;--at:#854F0B;
+  --blue:#185FA5;--bbg:#E6F1FB;--bt:#0C447C;
+  --acc:#3C3489;--r:10px;--rl:14px;
+}
+@media(prefers-color-scheme:dark){:root{
+  --bg:#1a1a18;--surface:#26261f;--surface2:#2e2e26;
+  --border:rgba(255,255,255,.08);--bm:rgba(255,255,255,.15);
+  --text:#f0efe9;--t2:#b4b2a9;--t3:#6c6c66;
+  --green:#5DCAA5;--gbg:#04342C;--gt:#9FE1CB;
+  --red:#F09595;--rbg:#501313;--rt:#F7C1C1;
+  --amber:#EF9F27;--abg:#412402;--at:#FAC775;
+  --blue:#85B7EB;--bbg:#042C53;--bt:#B5D4F4;
+  --acc:#AFA9EC;
+}}
+*{box-sizing:border-box;margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:Georgia,serif;min-height:100vh}
+.shell{max-width:1100px;margin:0 auto;padding:2rem 1.5rem}
+.mhead{display:flex;align-items:baseline;justify-content:space-between;margin-bottom:2rem;border-bottom:1px solid var(--bm);padding-bottom:1rem}
+.mhead h1{font-size:1.45rem;font-weight:400;letter-spacing:-.02em}
+.mhead h1 em{font-style:italic;color:var(--t2)}
+.mhead-r{font-size:12px;color:var(--t3);font-family:monospace;text-align:right}
+.layout{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;margin-bottom:1.5rem}
+@media(max-width:700px){.layout{grid-template-columns:1fr}}
+.panel{background:var(--surface);border:.5px solid var(--bm);border-radius:var(--rl);overflow:hidden}
+.panel-hd{display:flex;align-items:center;justify-content:space-between;padding:.7rem 1rem;background:var(--surface2);border-bottom:.5px solid var(--border)}
+.panel-hd h3{font-size:12px;font-weight:500;font-family:sans-serif;color:var(--t2);display:flex;align-items:center;gap:6px}
+.badge{font-size:10px;font-family:monospace;padding:2px 7px;border-radius:10px;font-weight:600}
+.badge-ok{background:var(--gbg);color:var(--gt)}
+.badge-wait{background:var(--surface2);color:var(--t3);border:.5px solid var(--border)}
+.badge-err{background:var(--rbg);color:var(--rt)}
+.badge-info{background:var(--bbg);color:var(--bt)}
+.drop{border:1.5px dashed var(--bm);margin:.75rem;border-radius:var(--r);padding:1.5rem 1rem;text-align:center;cursor:pointer;transition:border-color .2s,background .2s}
+.drop:hover,.drop.over{border-color:var(--acc);background:var(--surface2)}
+.drop i{font-size:32px;color:var(--t3);display:block;margin-bottom:.6rem}
+.drop p{font-size:13px;color:var(--t2);font-family:sans-serif}
+.drop small{font-size:11px;color:var(--t3);font-family:sans-serif}
+.drop input{display:none}
+.ftbs{display:flex;gap:6px;justify-content:center;margin-top:.6rem;flex-wrap:wrap}
+.ftb{display:inline-flex;align-items:center;gap:4px;padding:2px 8px;border-radius:20px;font-size:11px;font-family:sans-serif;font-weight:500}
+.ftb.csv{background:var(--gbg);color:var(--gt)}
+.ftb.xl{background:var(--bbg);color:var(--bt)}
+.ftb.pdf{background:var(--rbg);color:var(--rt)}
+.file-pill{display:flex;align-items:center;gap:8px;margin:.5rem .75rem;padding:.5rem .75rem;background:var(--gbg);border-radius:var(--r);font-size:12px;font-family:sans-serif;color:var(--gt)}
+.file-pill button{margin-left:auto;background:none;border:none;color:var(--gt);cursor:pointer;font-size:14px}
+.preview-wrap{overflow-x:auto;max-height:200px;overflow-y:auto}
+.preview-wrap table{width:100%;border-collapse:collapse;font-size:11px;font-family:sans-serif}
+.preview-wrap th{padding:.4rem .7rem;background:var(--surface2);color:var(--t3);font-weight:500;font-size:10px;text-transform:uppercase;letter-spacing:.05em;position:sticky;top:0;border-bottom:.5px solid var(--border)}
+.preview-wrap td{padding:.35rem .7rem;border-top:.5px solid var(--border);color:var(--text);white-space:nowrap}
+.map-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:8px;padding:.75rem 1rem;border-top:.5px solid var(--border)}
+.map-item label{font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:var(--t3);display:block;margin-bottom:3px;font-family:sans-serif}
+.map-item select{width:100%;padding:.35rem .5rem;border-radius:var(--r);border:.5px solid var(--bm);background:var(--surface);color:var(--text);font-size:12px;font-family:sans-serif}
+/* Bhavcopy panel */
+.bhav-steps{padding:.85rem 1rem;font-family:sans-serif}
+.bhav-step{display:flex;align-items:flex-start;gap:.6rem;font-size:13px;color:var(--text);margin-bottom:.6rem}
+.bhav-num{background:var(--acc);color:#fff;border-radius:50%;width:20px;height:20px;display:inline-flex;align-items:center;justify-content:center;font-size:10px;font-weight:700;flex-shrink:0;margin-top:1px}
+.bhav-drop{margin:.5rem .75rem;border:1.5px dashed var(--bm);border-radius:var(--r);padding:.85rem;text-align:center;cursor:pointer;font-family:sans-serif;font-size:13px;color:var(--t2);transition:all .2s}
+.bhav-drop:hover{border-color:var(--acc);background:var(--surface2)}
+.bhav-info{padding:.6rem 1rem;font-size:11px;color:var(--t3);font-family:sans-serif;border-top:.5px solid var(--border);line-height:1.7}
+.bhav-info a{color:var(--blue)}
+/* Notes */
+.note{display:none;gap:10px;align-items:flex-start;border-radius:var(--r);padding:.75rem 1rem;margin-bottom:1.25rem;font-size:13px;font-family:sans-serif;line-height:1.6}
+.note.show{display:flex}
+.note i{font-size:17px;flex-shrink:0;margin-top:1px}
+.note.amber{background:var(--abg);color:var(--at)}.note.amber i{color:var(--amber)}
+.note.red{background:var(--rbg);color:var(--rt)}.note.red i{color:var(--red)}
+.note.green{background:var(--gbg);color:var(--gt)}.note.green i{color:var(--green)}
+.sbar{display:none;align-items:center;gap:10px;background:var(--bbg);border-radius:var(--r);padding:.75rem 1rem;margin-bottom:1.25rem}
+.sbar.show{display:flex}
+.sbar p{font-size:13px;color:var(--bt);font-family:sans-serif}
+.spinner{width:14px;height:14px;border:2px solid rgba(24,95,165,.2);border-top-color:var(--blue);border-radius:50%;animation:spin .7s linear infinite;flex-shrink:0}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* Run row */
+.run-row{display:flex;align-items:center;justify-content:flex-end;gap:8px;padding:.75rem 1rem;border-top:.5px solid var(--border);background:var(--surface);border-radius:0 0 var(--rl) var(--rl)}
+.ptabs{display:flex;gap:4px;margin-right:auto}
+.ptab{padding:.3rem .75rem;border-radius:20px;border:.5px solid var(--bm);background:var(--surface);font-size:12px;font-family:sans-serif;color:var(--t2);cursor:pointer;transition:all .15s}
+.ptab.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+.btn{display:inline-flex;align-items:center;gap:6px;padding:.5rem 1.1rem;background:var(--acc);color:#fff;border:none;border-radius:var(--r);font-size:13px;font-family:sans-serif;cursor:pointer}
+.btn:hover{opacity:.85}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+/* Results */
+#results{display:none}
+#results.show{display:block}
+.chips{display:flex;gap:.6rem;margin-bottom:1.5rem;flex-wrap:wrap}
+.chip{background:var(--surface);border:.5px solid var(--bm);border-radius:20px;padding:.3rem .85rem;font-size:12px;color:var(--t2);font-family:sans-serif;display:inline-flex;align-items:center;gap:5px}
+.chip strong{color:var(--text);font-weight:500}
+.metrics{display:grid;grid-template-columns:repeat(auto-fit,minmax(185px,1fr));gap:10px;margin-bottom:1.5rem}
+.mc{background:var(--surface);border:.5px solid var(--border);border-radius:var(--rl);padding:1.1rem}
+.mc .lbl{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--t3);margin-bottom:.5rem;font-family:sans-serif}
+.mc .val{font-size:1.6rem;font-weight:400;font-family:Georgia,serif;letter-spacing:-.02em;line-height:1}
+.mc .sub{font-size:11px;color:var(--t2);margin-top:.35rem;font-family:sans-serif}
+.mc.up .val{color:var(--green)}.mc.down .val{color:var(--red)}.mc.neu .val{color:var(--text)}
+.movers{display:grid;grid-template-columns:1fr 1fr;gap:1rem;margin-bottom:1.5rem}
+@media(max-width:500px){.movers{grid-template-columns:1fr}}
+.mcard{background:var(--surface);border:.5px solid var(--border);border-radius:var(--rl);padding:1.1rem}
+.mcard h3{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:var(--t3);margin-bottom:.85rem;font-family:sans-serif}
+.mrow{display:flex;justify-content:space-between;align-items:center;padding:.35rem 0;border-top:.5px solid var(--border);font-family:sans-serif;font-size:12px}
+.mrow:first-of-type{border-top:none}
+.mn{font-weight:500;max-width:140px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.mp.up{color:var(--green);font-weight:500}.mp.down{color:var(--red);font-weight:500}
+.pbar-sec{background:var(--surface);border:.5px solid var(--border);border-radius:var(--rl);padding:1.1rem;margin-bottom:1.5rem}
+.pbar-sec h3{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:var(--t3);margin-bottom:.85rem;font-family:sans-serif}
+.prow{display:grid;grid-template-columns:90px 1fr 130px 130px;gap:.85rem;align-items:center;padding:.6rem 0;border-top:.5px solid var(--border);font-family:sans-serif;font-size:12px}
+.prow:first-of-type{border-top:none}
+.plbl{font-weight:500;color:var(--t2)}
+.pbw{height:5px;background:var(--surface2);border-radius:3px;overflow:hidden}
+.pb{height:100%;border-radius:3px}.pb.up{background:var(--green)}.pb.down{background:var(--red)}
+.pv{text-align:right;font-weight:500}.pv.up{color:var(--green)}.pv.down{color:var(--red)}
+.pa{text-align:right;color:var(--t2);font-size:11px}
+.charts{display:grid;grid-template-columns:1fr 1fr;gap:1.25rem;margin-bottom:1.5rem}
+@media(max-width:650px){.charts{grid-template-columns:1fr}}
+.cc{background:var(--surface);border:.5px solid var(--border);border-radius:var(--rl);padding:1.1rem}
+.cc h3{font-size:12px;font-weight:500;color:var(--t2);margin-bottom:.85rem;font-family:sans-serif}
+.htbl{background:var(--surface);border:.5px solid var(--border);border-radius:var(--rl);overflow:hidden;margin-bottom:1.5rem;overflow-x:auto}
+.htbl table{width:100%;border-collapse:collapse;font-family:sans-serif;font-size:12px;min-width:680px}
+.htbl thead{background:var(--surface2)}
+.htbl th{padding:.6rem .85rem;text-align:left;font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:var(--t3);white-space:nowrap}
+.htbl td{padding:.55rem .85rem;border-top:.5px solid var(--border)}
+.htbl tr:hover td{background:var(--surface2)}
+.htbl td.r{text-align:right;font-variant-numeric:tabular-nums}
+.htbl td.nm{font-weight:500;max-width:165px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.bdg{display:inline-block;padding:1px 7px;border-radius:20px;font-size:10px;font-weight:500}
+.bdg.up{background:var(--gbg);color:var(--gt)}.bdg.down{background:var(--rbg);color:var(--rt)}.bdg.w{background:var(--surface2);color:var(--t3)}
+footer{text-align:center;font-size:11px;color:var(--t3);margin-top:2rem;font-family:sans-serif;padding-bottom:1rem}
+</style>
+</head>
+<body>
+<div class="shell">
+<div class="mhead">
+  <h1>Fund Portfolio <em>Valuation Tracker</em></h1>
+  <div class="mhead-r">
+    <div id="clock">—</div>
+    <div id="mktStatus" style="font-size:11px;margin-top:2px"></div>
+  </div>
+</div>
+
+<div class="note amber show" id="noteHint">
+  <i class="ti ti-info-circle"></i>
+  <span>Upload your fund portfolio on the left. Prices are fetched automatically from NSE — no manual download needed. Click Analyse when ready.</span>
+</div>
+<div class="note red" id="noteErr"><i class="ti ti-alert-circle"></i><span id="noteErrTxt"></span></div>
+<div class="note green" id="noteOk"><i class="ti ti-circle-check"></i><span id="noteOkTxt"></span></div>
+<div class="sbar" id="sbar"><span class="spinner"></span><p id="sbarTxt">Loading…</p></div>
+
+<div class="layout">
+  <!-- LEFT: Portfolio -->
+  <div class="panel">
+    <div class="panel-hd">
+      <h3><i class="ti ti-briefcase"></i> Fund portfolio</h3>
+      <span class="badge badge-wait" id="pfBadge">no file</span>
+    </div>
+    <div class="drop" id="pfDrop">
+      <i class="ti ti-file-upload"></i>
+      <p>Drop portfolio file or click to browse</p>
+      <small>Supports NSE tickers &amp; ISIN codes</small>
+      <div class="ftbs">
+        <span class="ftb csv">CSV</span>
+        <span class="ftb xl">Excel</span>
+        <span class="ftb pdf">PDF</span>
+      </div>
+      <input type="file" id="pfFile" accept=".csv,.xlsx,.xls,.pdf">
+    </div>
+    <div id="pfPill"></div>
+    <div id="pfPreview" style="display:none">
+      <div class="preview-wrap"><table id="pfTbl"></table></div>
+      <div class="map-grid" id="pfMap"></div>
+    </div>
+  </div>
+
+  <!-- RIGHT: API Status -->
+  <div class="panel">
+    <div class="panel-hd">
+      <h3><i class="ti ti-database"></i> Price data <span style="font-size:10px;color:var(--t3);font-weight:400">(NSE official bhavcopy)</span></h3>
+      <span class="badge badge-wait" id="bhavBadge">connecting…</span>
+    </div>
+    <div style="padding:1.25rem 1rem;font-family:sans-serif">
+      <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem">
+        <span id="apiDot" style="width:12px;height:12px;border-radius:50%;background:var(--amber);flex-shrink:0"></span>
+        <span id="apiStatusTxt" style="font-size:13px;color:var(--t2)">Connecting to local server…</span>
+      </div>
+      <div id="apiDetails" style="display:none;background:var(--surface2);border-radius:var(--r);padding:.85rem;font-size:12px;color:var(--t2);line-height:2">
+        <div><strong style="color:var(--text)">Today:</strong> <span id="dateToday">—</span></div>
+        <div><strong style="color:var(--text)">1 Week:</strong> <span id="dateWeek">—</span></div>
+        <div><strong style="color:var(--text)">1 Month:</strong> <span id="dateMonth">—</span></div>
+        <div><strong style="color:var(--text)">Stocks loaded:</strong> <span id="stockCount">—</span></div>
+      </div>
+      <div id="apiErrorBox" style="display:none;margin-top:.85rem;background:var(--rbg);border-radius:var(--r);padding:.85rem;font-size:12px;color:var(--rt);line-height:1.7">
+        <strong>Server not running.</strong><br>
+        Open Terminal and run:<br>
+        <code style="background:rgba(0,0,0,.15);padding:2px 6px;border-radius:4px;font-size:11px">cd ~/Desktop/fund-tracker &amp;&amp; python3 server.py</code><br>
+        Then refresh this page.
+      </div>
+      <button onclick="retryConnect()" id="btnRetry" style="display:none;margin-top:.85rem;padding:.4rem .9rem;border-radius:var(--r);border:.5px solid var(--bm);background:var(--surface);color:var(--t2);font-size:12px;font-family:sans-serif;cursor:pointer">
+        ↻ Retry connection
+      </button>
+    </div>
+    <div id="bhavPills"></div>
+  </div>
+</div>
+
+<!-- Run row -->
+<div class="panel" style="margin-bottom:1.5rem">
+  <div class="run-row">
+    <div class="ptabs">
+      <button class="ptab active" data-p="1d">1 Day</button>
+      <button class="ptab" data-p="1w">1 Week</button>
+      <button class="ptab" data-p="1m">1 Month</button>
+    </div>
+    <button class="btn" id="btnRun" onclick="runAnalysis()" disabled>
+      <i class="ti ti-chart-bar" style="font-size:13px"></i> Analyse
+    </button>
+  </div>
+</div>
+
+<!-- Results -->
+<div id="results">
+  <div class="chips" id="chips"></div>
+  <div class="metrics" id="metrics"></div>
+  <div class="movers" id="movers"></div>
+  <div class="pbar-sec"><h3>All periods</h3><div id="prows"></div></div>
+  <div class="charts">
+    <div class="cc"><h3>Portfolio weights (top 12)</h3>
+      <div style="position:relative;height:240px"><canvas id="pieChart"></canvas></div>
+    </div>
+    <div class="cc"><h3>Contribution to change — top 10 (bps)</h3>
+      <div id="barWrap" style="position:relative;height:280px"><canvas id="barChart"></canvas></div>
+    </div>
+  </div>
+  <div class="htbl">
+    <table>
+      <thead><tr>
+        <th>#</th><th>Stock</th><th>Symbol</th>
+        <th class="r">Weight</th><th class="r">MV (Cr)</th>
+        <th class="r">Prev close</th><th class="r">Close</th>
+        <th class="r">1D chg</th><th class="r">Impact (bps)</th>
+      </tr></thead>
+      <tbody id="htblBody"></tbody>
+    </table>
+  </div>
+</div>
+<footer>Prices from NSE official bhavcopy &nbsp;·&nbsp; For informational use only &nbsp;·&nbsp; Not investment advice</footer>
+</div>
+
+<script>
+pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+// ── ISIN → NSE symbol ────────────────────────────────────────────────────
+const ISIN_NSE = {
+  'INE002A01018':'RELIANCE','INE009A01021':'INFY','INE010B01027':'ZYDUSLIFE',
+  'INE018A01030':'LT','INE019A01038':'TECHM','INE020B01018':'ICICIGI',
+  'INE028A01039':'BANKBARODA','INE030A01027':'HINDUNILVR','INE032A01023':'TVSMOTOR',
+  'INE040A01026':'HDFCBANK','INE040A01034':'HDFCBANK','INE044A01036':'SUNPHARMA',
+  'INE053A01029':'BPCL','INE059A01026':'CIPLA','INE061F01013':'FORTIS',
+  'INE062A01020':'DRREDDY','INE070A01015':'HINDALCO','INE079A01024':'AMBUJACEM',
+  'INE081A01020':'TATASTEEL','INE089A01023':'TORNTPHARM','INE090A01021':'ICICIBANK',
+  'INE095A01012':'INDUSINDBK','INE0GXK01011':'ADANIGREEN','INE101A01026':'M&M',
+  'INE102D01028':'GODREJCP','INE108V01019':'AWFIS','INE114A01011':'SAIL',
+  'INE120A01034':'MUTHOOTFIN','INE123W01016':'SBILIFE','INE129A01019':'GAIL',
+  'INE148I01020':'NAUKRI','INE154A01025':'ITC','INE155A01022':'TATAPOWER',
+  'INE160A01022':'PNB','INE192R01011':'DMART','INE200M01021':'POLYCAB',
+  'INE202E01016':'RECLTD','INE205A01025':'COLPAL','INE208A01029':'IDFCFIRSTB',
+  'INE213A01029':'AXISBANK','INE226A01021':'HEROMOTOCO','INE237A01028':'KOTAKBANK',
+  'INE238A01034':'AXISBANK','INE247A01021':'GRASIM','INE261F01014':'TATACOMM',
+  'INE284S01014':'SJSENTERPR','INE296A01024':'BAJFINANCE','INE303R01014':'CROMPTON',
+  'INE306A01021':'HAVELLS','INE342J01019':'LTIM','INE356A01018':'SIEMENS',
+  'INE364A01020':'DIVISLAB','INE383C01021':'GODREJPROP','INE397D01016':'BHARTIARTL',
+  'INE397D01024':'BHARTIARTL','INE406A01037':'HDFCLIFE','INE423A01024':'DABUR',
+  'INE437A01024':'APOLLOHOSP','INE467B01029':'TCS','INE476A01022':'CANBK',
+  'INE481G01011':'ULTRACEMCO','INE492A01021':'UNIONBANK','INE494B01023':'PERSISTENT',
+  'INE528G01019':'POWERGRID','INE545U01014':'ADANIPOWER','INE585B01010':'SBIN',
+  'INE647O01011':'ZOMATO','INE669C01036':'ADANIENT','INE721A01013':'SHRIRAMFIN',
+  'INE733E01010':'NTPC','INE742F01042':'ADANIPORTS','INE749A01020':'WIPRO',
+  'INE758E01017':'TITAN','INE758T01015':'LICI','INE761H01022':'LALPATHLAB',
+  'INE765G01017':'HDFCLIFE','INE774D01024':'CHOLAFIN','INE811K01011':'MARICO',
+  'INE854D01024':'MCDOWELL-N','INE860A01027':'HCLTECH','INE917I01010':'BAJAJFINSV',
+  'INE364U01010':'PAYTM','INE212H01026':'PIIND','INE171A01029':'MCDOWELL-N',
+};
+
+function resolveSymbol(raw) {
+  if (!raw) return null;
+  const s = String(raw).trim().toUpperCase();
+  // ISIN format
+  if (/^INE[A-Z0-9]{9}$/.test(s)) return ISIN_NSE[s] || null;
+  // Strip exchange suffix
+  const sym = s.replace(/\.(NS|BO)$/,'');
+  // Reject if it has spaces (fund names), too long, or looks like a debt instrument
+  if (/\s/.test(sym)) return null;
+  if (sym.length > 20) return null;
+  if (!/^[A-Z0-9&-]+$/.test(sym)) return null;
+  return sym;
+}
+
+// ── State ────────────────────────────────────────────────────────────────
+let rawRows=[], rawHeaders=[], colMap={};
+let portfolio=[];
+let bhavToday={}, bhavWeek={}, bhavMonth={};
+let bhavDates={today:null, week:null, month:null};
+let activePeriod='1d';
+let pieChart, barChart;
+
+// ── Clock ────────────────────────────────────────────────────────────────
+setInterval(()=>{
+  const now = new Date();
+  document.getElementById('clock').textContent =
+    now.toLocaleString('en-IN',{timeZone:'Asia/Kolkata',day:'2-digit',month:'short',
+    year:'numeric',hour:'2-digit',minute:'2-digit',second:'2-digit'})+' IST';
+  const ist = new Date(now.toLocaleString('en-US',{timeZone:'Asia/Kolkata'}));
+  const d=ist.getDay(), m=ist.getHours()*60+ist.getMinutes();
+  const ms=document.getElementById('mktStatus');
+  ms.innerHTML = (d>=1&&d<=5&&m>=555&&m<930)
+    ? '<span style="color:var(--green)">&#9679; Market open</span>'
+    : '<span style="color:var(--t3)">&#9679; Market closed</span>';
+},1000);
+
+// ── Helpers ──────────────────────────────────────────────────────────────
+const st=(m)=>{document.getElementById('sbar').classList.add('show');document.getElementById('sbarTxt').textContent=m;};
+const stOff=()=>document.getElementById('sbar').classList.remove('show');
+const errNote=(m)=>{stOff();const e=document.getElementById('noteErr');e.classList.add('show');document.getElementById('noteErrTxt').textContent=m;};
+const okNote=(m)=>{const o=document.getElementById('noteOk');o.classList.add('show');document.getElementById('noteOkTxt').textContent=m;};
+const clearNotes=()=>['noteHint','noteErr','noteOk'].forEach(id=>document.getElementById(id).classList.remove('show'));
+
+function checkEnableAnalyse() {
+  const hasBhav = Object.keys(bhavToday).length > 0 || apiReady;
+  const hasPf = rawRows.length > 0;
+  document.getElementById('btnRun').disabled = !(hasBhav && hasPf);
+  if (hasBhav && hasPf) document.getElementById('noteHint').classList.remove('show');
+}
+
+// ── Portfolio upload ──────────────────────────────────────────────────────
+const pfDrop = document.getElementById('pfDrop');
+pfDrop.addEventListener('click', ()=>document.getElementById('pfFile').click());
+pfDrop.addEventListener('dragover', e=>{e.preventDefault();pfDrop.classList.add('over');});
+pfDrop.addEventListener('dragleave', ()=>pfDrop.classList.remove('over'));
+pfDrop.addEventListener('drop', e=>{e.preventDefault();pfDrop.classList.remove('over');if(e.dataTransfer.files[0])handlePfFile(e.dataTransfer.files[0]);});
+document.getElementById('pfFile').addEventListener('change', function(){if(this.files[0])handlePfFile(this.files[0]);});
+
+async function handlePfFile(file) {
+  clearNotes(); st('Reading '+file.name+'…');
+  try {
+    const ext=file.name.split('.').pop().toLowerCase();
+    if (ext==='csv') await parsePfCSV(file);
+    else if (ext==='xlsx'||ext==='xls') await parsePfExcel(file);
+    else if (ext==='pdf') await parsePfPDF(file);
+    else throw new Error('Use CSV, Excel, or PDF');
+    stOff();
+    document.getElementById('pfBadge').textContent='loaded ✓';
+    document.getElementById('pfBadge').className='badge badge-ok';
+    document.getElementById('pfPill').innerHTML=
+      '<div class="file-pill"><i class="ti ti-file-check"></i>'+file.name+
+      ' — '+rawRows.length+' rows<button onclick="clearPf()">✕</button></div>';
+    document.getElementById('pfPreview').style.display='block';
+    buildPreview();
+    checkEnableAnalyse();
+  } catch(e){stOff();errNote('Could not read file: '+e.message);}
+}
+
+function clearPf(){
+  rawRows=[];rawHeaders=[];portfolio=[];
+  document.getElementById('pfPill').innerHTML='';
+  document.getElementById('pfPreview').style.display='none';
+  document.getElementById('pfFile').value='';
+  document.getElementById('pfBadge').textContent='no file';
+  document.getElementById('pfBadge').className='badge badge-wait';
+  document.getElementById('results').classList.remove('show');
+  checkEnableAnalyse();
+}
+
+function parsePfCSV(file){
+  return new Promise((res,rej)=>{
+    Papa.parse(file,{header:true,skipEmptyLines:true,complete:r=>{
+      if(!r.data.length){rej(new Error('Empty CSV'));return;}
+      rawHeaders=Object.keys(r.data[0]);
+      rawRows=r.data.map(row=>rawHeaders.map(h=>row[h]||''));
+      res();
+    },error:e=>rej(new Error(e.message))});
+  });
+}
+
+async function parsePfExcel(file){
+  const ab=await file.arrayBuffer();
+  const wb=XLSX.read(ab,{type:'array'});
+  const ws=wb.Sheets[wb.SheetNames[0]];
+  const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
+  if(data.length<2)throw new Error('Sheet appears empty');
+  const hr=findHeaderRow(data);
+  rawHeaders=data[hr].map(c=>String(c).trim());
+  rawRows=data.slice(hr+1).filter(r=>r.some(c=>c!=='')).map(r=>rawHeaders.map((_,i)=>String(r[i]||'').trim()));
+}
+
+async function parsePfPDF(file){
+  const ab=await file.arrayBuffer();
+  const pdf=await pdfjsLib.getDocument({data:ab}).promise;
+  const lines=[];
+  for(let p=1;p<=pdf.numPages;p++){
+    const pg=await pdf.getPage(p);
+    const ct=await pg.getTextContent();
+    const byY={};
+    ct.items.forEach(item=>{
+      const y=Math.round(item.transform[5]);
+      if(!byY[y])byY[y]=[];
+      byY[y].push({x:item.transform[4],text:item.str.trim()});
+    });
+    Object.keys(byY).sort((a,b)=>b-a).forEach(y=>{
+      const ln=byY[y].sort((a,b)=>a.x-b.x).map(i=>i.text).filter(Boolean).join('\t');
+      if(ln)lines.push(ln);
+    });
+  }
+  const {headers,rows}=detectPDFTable(lines);
+  if(!rows.length)throw new Error('No table found in PDF');
+  rawHeaders=headers;rawRows=rows;
+}
+
+function detectPDFTable(lines){
+  let bi=-1,bs=0;
+  lines.forEach((ln,i)=>{
+    const parts=ln.split('\t').filter(Boolean);
+    const sc=parts.reduce((s,p)=>{
+      const l=p.toLowerCase();
+      if(l.includes('symbol')||l.includes('isin'))return s+10;
+      if(l.includes('name')||l.includes('instrument'))return s+8;
+      if(l.includes('weight')||l.includes('%'))return s+7;
+      if(l.includes('value')||l.includes('market'))return s+7;
+      return s;
+    },0);
+    if(sc>bs){bs=sc;bi=i;}
+  });
+  if(bs<5||bi===-1){const ws=lines.map(l=>l.split('\t').filter(Boolean).length);bi=ws.indexOf(Math.max(...ws));}
+  const headers=lines[bi].split('\t').filter(Boolean).map(h=>h.trim());
+  const rows=[];
+  for(let i=bi+1;i<lines.length;i++){
+    const parts=lines[i].split('\t').filter(Boolean);
+    if(parts.length>=Math.max(2,headers.length-2))rows.push(headers.map((_,j)=>String(parts[j]||'').trim()));
+  }
+  return{headers,rows};
+}
+
+function findHeaderRow(data){
+  const kw=['symbol','ticker','isin','name','instrument','weight','mv','value','market','%','alloc'];
+  let best=0,bs=0;
+  data.slice(0,15).forEach((row,i)=>{
+    const sc=row.reduce((s,c)=>s+kw.filter(k=>String(c).toLowerCase().includes(k)).length,0);
+    if(sc>bs){bs=sc;best=i;}
+  });
+  return best;
+}
+
+// ── Column detection ──────────────────────────────────────────────────────
+const ALIASES={
+  symbol:['symbol','ticker','nse','bse','isin','scrip','code','stock code','name of the instrument'],
+  name:['name','instrument','company','security','stock','scrip name'],
+  weight:['weight','wt','allocation','% to nav','% nav','% to net','percentage','weightage','weight (%)','weight%','pct','% aum','% to net assets','% to nav'],
+  mv:['mv','market value','value','amount','corpus','aum','mktval','mkt value','market val','lakh','lakhs','crore','crores','rs.','inr','mv (cr)','mv_cr','mv (lakh)','mv (lakhs)','market/fair value','fair value','market value(rs. in lakhs)','market value (rs. in lakhs)'],
+};
+
+function guessCol(headers,field){
+  const lh=headers.map(h=>h.toLowerCase().replace(/\s+/g,' ').trim());
+  for(const a of ALIASES[field]){
+    const idx=lh.findIndex(h=>h===a||h.includes(a));
+    if(idx!==-1)return idx;
+  }
+  return -1;
+}
+
+function buildPreview(){
+  const tbl=document.getElementById('pfTbl');
+  tbl.innerHTML='<thead><tr>'+rawHeaders.map(h=>'<th>'+h+'</th>').join('')+'</tr></thead><tbody>'+
+    rawRows.slice(0,5).map(r=>'<tr>'+r.map(c=>'<td>'+c+'</td>').join('')+'</tr>').join('')+'</tbody>';
+  const fields=[{key:'symbol',label:'Symbol / ISIN'},{key:'name',label:'Name'},{key:'weight',label:'Weight %'},{key:'mv',label:'Market value'}];
+  document.getElementById('pfMap').innerHTML=fields.map(f=>{
+    const g=guessCol(rawHeaders,f.key);
+    return '<div class="map-item"><label>'+f.label+'</label>'+
+      '<select id="cm_'+f.key+'"><option value="">— skip —</option>'+
+      rawHeaders.map((h,i)=>'<option value="'+i+'"'+(i===g?' selected':'')+'>'+h+'</option>').join('')+
+      '</select></div>';
+  }).join('');
+}
+
+// ── Bhavcopy upload ───────────────────────────────────────────────────────
+async function handleBhavDrop(files) {
+  for (const file of files) {
+    await loadBhavFile(file);
+  }
+}
+
+async function loadBhavFile(file) {
+  clearNotes(); st('Reading bhavcopy — '+file.name+'…');
+  try {
+    let text;
+    if(file.name.endsWith('.zip')){
+      const ab=await file.arrayBuffer();
+      const zip=await JSZip.loadAsync(ab);
+      const csvFile=Object.values(zip.files).find(f=>f.name.endsWith('.csv'));
+      if(!csvFile)throw new Error('No CSV inside ZIP');
+      text=await csvFile.async('text');
+    } else {
+      text=await file.text();
+    }
+    const parsed=parseBhavCSV(text);
+    const count=Object.keys(parsed).length;
+    if(count<100)throw new Error('Too few stocks parsed ('+count+'). Make sure this is the NSE CM equity bhavcopy.');
+
+    // Determine which slot to fill based on filename date
+    const dm=file.name.match(/(\d{8})/);
+    const fileDate=dm?dm[1]:null;
+    
+    if(!Object.keys(bhavToday).length){
+      bhavToday=parsed; bhavDates.today=fileDate;
+    } else if(!Object.keys(bhavWeek).length){
+      bhavWeek=parsed; bhavDates.week=fileDate;
+    } else {
+      bhavMonth=parsed; bhavDates.month=fileDate;
+    }
+
+    stOff();
+    const loaded=[bhavToday,bhavWeek,bhavMonth].filter(b=>Object.keys(b).length>0).length;
+    document.getElementById('bhavBadge').textContent=loaded+' file'+(loaded>1?'s':'')+' loaded ✓';
+    document.getElementById('bhavBadge').className='badge badge-ok';
+
+    // Add pill
+    const pills=document.getElementById('bhavPills');
+    const pill=document.createElement('div');
+    pill.className='file-pill';
+    pill.innerHTML='<i class="ti ti-file-check"></i>'+file.name+
+      ' ('+Math.round(count/2).toLocaleString()+' stocks)';
+    pills.appendChild(pill);
+
+    // Update drop zone
+    document.getElementById('bhavDrop').style.borderColor='var(--green)';
+    document.getElementById('bhavDrop').style.background='var(--gbg)';
+
+    checkEnableAnalyse();
+    okNote('Bhavcopy loaded — '+Math.round(count/2).toLocaleString()+' stocks.'+(portfolio.length?' Click Analyse.':' Now upload your fund portfolio.'));
+  } catch(e){
+    stOff();errNote('Could not read bhavcopy: '+e.message);
+  }
+}
+
+const EQUITY_SERIES=new Set(['EQ','BE','BZ','SM','ST','N1','N2','N3','N4','N5','N6','N7','N8']);
+
+function parseBhavCSV(text){
+  const rows=Papa.parse(text,{header:true,skipEmptyLines:true}).data;
+  const map={};
+  for(const r of rows){
+    const series=(r.SctySrs||r.SERIES||'').trim();
+    if(!EQUITY_SERIES.has(series))continue;
+    const sym=(r.TckrSymb||r.SYMBOL||'').trim().toUpperCase();
+    const isin=(r.ISIN||'').trim();
+    const close=parseFloat(r.ClsPric||r.CLOSE||0);
+    const prevClose=parseFloat(r.PrvsClsgPric||r.PREVCLOSE||0);
+    if(!sym||close<=0)continue;
+    const entry={close,prevClose,isin};
+    map[sym]=entry;
+    if(isin)map[isin]=entry;
+  }
+  return map;
+}
+
+// ── Period tabs ───────────────────────────────────────────────────────────
+document.querySelectorAll('.ptab').forEach(btn=>{
+  btn.addEventListener('click',()=>{
+    document.querySelectorAll('.ptab').forEach(b=>b.classList.remove('active'));
+    btn.classList.add('active');
+    activePeriod=btn.dataset.p;
+    if(portfolio.length&&Object.keys(bhavToday).length)render();
+  });
+});
+
+// ── Run analysis ──────────────────────────────────────────────────────────
+function runAnalysis(){
+  clearNotes();
+
+  // Read column mapping
+  const getCM=f=>{const el=document.getElementById('cm_'+f);return el&&el.value!==''?parseInt(el.value):undefined;};
+  const symIdx=getCM('symbol'),nameIdx=getCM('name'),wtIdx=getCM('weight'),mvIdx=getCM('mv');
+  if(symIdx===undefined||wtIdx===undefined){errNote('Please map the Symbol/ISIN and Weight columns.');return;}
+
+  const get=(r,idx)=>idx!==undefined?String(r[idx]||'').trim():'';
+  portfolio=rawRows.map((r,i)=>{
+    const rawSym=get(r,symIdx);
+    const rawName=get(r,nameIdx)||rawSym;
+    // Skip debt rows
+    if(/\d+\.\d+%/.test(rawName)||/treps|t-bill|repo|treasury|ncd|debenture/i.test(rawName))return null;
+    const sym=resolveSymbol(rawSym);
+    if(!sym)return null;
+    const rawW=get(r,wtIdx).replace(/[%,\s]/g,'');
+    let weight=parseFloat(rawW)||0;
+    if(weight>0&&weight<1)weight=weight*100; // 0.0987 → 9.87
+    const rawMv=get(r,mvIdx).replace(/[,\s]/g,'');
+    const mv_cr=parseFloat(rawMv)||0;
+    if(weight<=0)return null;
+    return{index:i+1,symbol:sym,name:rawName,weight,mv_cr};
+  }).filter(Boolean);
+
+  if(!portfolio.length){errNote('No valid equity rows found. Check column mappings.');return;}
+
+  // Check coverage
+  const found=portfolio.filter(s=>bhavToday[s.symbol]||bhavToday[s.symbol+'EQ']);
+  if(!found.length){
+    errNote('No portfolio stocks matched the bhavcopy. Make sure the bhavcopy is the NSE CM equity file. First symbol: '+portfolio[0].symbol);
+    return;
+  }
+
+  render();
+  document.getElementById('results').classList.add('show');
+  document.getElementById('results').scrollIntoView({behavior:'smooth',block:'start'});
+}
+
+// ── Render ────────────────────────────────────────────────────────────────
+function lookupBhav(bhav,sym){return bhav[sym]||bhav[sym+'EQ']||null;}
+
+function render(){
+  const totalMv=portfolio.reduce((s,r)=>s+r.mv_cr,0);
+
+  const testSym = portfolio[0]&&portfolio[0].symbol;
+
+  const stocks=portfolio.map(s=>{
+    const today=lookupBhav(bhavToday,s.symbol);
+    const week=lookupBhav(bhavWeek,s.symbol);
+    const month=lookupBhav(bhavMonth,s.symbol);
+    if(s.symbol==='HDFCBANK') {
+
+    }
+    if(!today)return{...s,close:null,prevClose:null,chg1d:null,chg1w:null,chg1m:null,impact:null};
+    const close=today.close, prevClose=today.prevClose;
+    const chg1d=prevClose?(close-prevClose)/prevClose:null;
+    const chg1w=week?(close-week.close)/week.close:null;
+    const chg1m=month?(close-month.close)/month.close:null;
+    if(s.symbol==='HDFCBANK')
+    const pc=activePeriod==='1d'?chg1d:activePeriod==='1w'?chg1w:chg1m;
+    const impact=pc!==null?pc*(s.weight/100)*10000:null;
+    return{...s,close,prevClose,chg1d,chg1w,chg1m,impact};
+  });
+
+  const fetched=stocks.filter(s=>s.close!==null);
+  const fundChg=period=>{
+    let tot=0;
+    stocks.forEach(s=>{
+      const c=period==='1d'?s.chg1d:period==='1w'?s.chg1w:s.chg1m;
+      if(c!==null)tot+=c*(s.weight/100);
+    });
+    return tot;
+  };
+
+  const c1d=fundChg('1d'),c1w=fundChg('1w'),c1m=fundChg('1m');
+  const pc=activePeriod==='1d'?c1d:activePeriod==='1w'?c1w:c1m;
+  const pl=activePeriod==='1d'?'1 Day':activePeriod==='1w'?'1 Week':'1 Month';
+  const cRs=totalMv*pc;
+  const sg=v=>v>=0?'+':'';
+  const pct=v=>(v*100).toFixed(2)+'%';
+  const cr=v=>'\u20b9'+Math.abs(v).toLocaleString('en-IN',{maximumFractionDigits:0})+' Cr';
+
+  document.getElementById('chips').innerHTML=[
+    ['ti-briefcase',portfolio.length+' holdings'],
+    ['ti-currency-rupee','AUM <strong>\u20b9'+totalMv.toLocaleString('en-IN',{maximumFractionDigits:0})+' Cr</strong>'],
+    ['ti-database',fetched.length+' prices matched'],
+    ['ti-calendar','Period: <strong>'+pl+'</strong>'],
+  ].map(([ic,html])=>'<div class="chip"><i class="ti '+ic+'"></i>'+html+'</div>').join('');
+
+  document.getElementById('metrics').innerHTML=[
+    {cls:pc>=0?'up':'down',lbl:'Fund NAV change ('+pl+')',val:sg(pc)+pct(pc),sub:'Weighted avg of holdings'},
+    {cls:cRs>=0?'up':'down',lbl:'AUM change ('+pl+')',val:sg(cRs)+cr(cRs),sub:'On \u20b9'+totalMv.toLocaleString('en-IN',{maximumFractionDigits:0})+' Cr AUM'},
+    {cls:c1d>=0?'up':'down',lbl:'1 Day change',val:sg(c1d)+pct(c1d),sub:sg(totalMv*c1d)+cr(totalMv*c1d)},
+    {cls:c1w>=0?'up':'down',lbl:'1 Week change',val:sg(c1w)+pct(c1w),sub:sg(totalMv*c1w)+cr(totalMv*c1w)},
+    {cls:c1m>=0?'up':'down',lbl:'1 Month change',val:sg(c1m)+pct(c1m),sub:sg(totalMv*c1m)+cr(totalMv*c1m)},
+    {cls:'neu',lbl:'Coverage',val:Math.round(fetched.length/portfolio.length*100)+'%',sub:fetched.length+' of '+portfolio.length+' matched'},
+  ].map(m=>'<div class="mc '+m.cls+'"><div class="lbl">'+m.lbl+'</div><div class="val">'+m.val+'</div><div class="sub">'+m.sub+'</div></div>').join('');
+
+  const wc=stocks.filter(s=>s.impact!==null).sort((a,b)=>b.impact-a.impact);
+  const gainers=[...wc].sort((a,b)=>b.chg1d-a.chg1d).slice(0,5);
+  const losers=[...wc].sort((a,b)=>a.chg1d-b.chg1d).slice(0,5);
+
+  document.getElementById('movers').innerHTML=
+    mCard('ti-trending-up','Top gainers (1D)',gainers,'up')+
+    mCard('ti-trending-down','Top losers (1D)',losers,'down');
+
+  function mCard(ic,title,list,dir){
+    return '<div class="mcard"><h3><i class="ti '+ic+'" style="font-size:12px;margin-right:4px"></i>'+title+'</h3>'+
+      list.map(s=>'<div class="mrow"><span class="mn">'+s.name+'</span>'+
+      '<span class="mp '+dir+'">'+(s.chg1d>=0?'+':'')+(s.chg1d*100).toFixed(2)+'%</span></div>').join('')+'</div>';
+  }
+
+  const periods=[{lbl:'1 Day',c:c1d,mv:totalMv*c1d},{lbl:'1 Week',c:c1w,mv:totalMv*c1w},{lbl:'1 Month',c:c1m,mv:totalMv*c1m}];
+  const maxA=Math.max(...periods.map(p=>Math.abs(p.c)));
+  document.getElementById('prows').innerHTML=periods.map(p=>
+    '<div class="prow"><span class="plbl">'+p.lbl+'</span>'+
+    '<div class="pbw"><div class="pb '+(p.c>=0?'up':'down')+'" style="width:'+(maxA?Math.abs(p.c/maxA)*100:0)+'%"></div></div>'+
+    '<span class="pv '+(p.c>=0?'up':'down')+'">'+sg(p.c)+(p.c*100).toFixed(2)+'%</span>'+
+    '<span class="pa">'+sg(p.mv)+'\u20b9'+Math.abs(p.mv).toLocaleString('en-IN',{maximumFractionDigits:0})+' Cr</span></div>').join('');
+
+  const top10=wc.slice(0,10);
+  document.getElementById('barWrap').style.height=Math.max(260,top10.length*34+50)+'px';
+  if(barChart)barChart.destroy();
+  barChart=new Chart(document.getElementById('barChart'),{
+    type:'bar',
+    data:{labels:top10.map(s=>s.name.length>15?s.name.slice(0,13)+'\u2026':s.name),
+      datasets:[{data:top10.map(s=>parseFloat(s.impact.toFixed(2))),
+        backgroundColor:top10.map(s=>s.impact>=0?'#1D9E75':'#E24B4A'),borderRadius:4,barPercentage:.65}]},
+    options:{indexAxis:'y',responsive:true,maintainAspectRatio:false,
+      plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>(ctx.raw>=0?'+':'')+ctx.raw.toFixed(1)+' bps'}}},
+      scales:{x:{grid:{color:'rgba(128,128,128,.1)'},ticks:{color:'#888780',font:{size:11},callback:v=>v+' bps'}},
+              y:{grid:{display:false},ticks:{color:'#5c5c58',font:{size:11}}}}}
+  });
+
+  const top12=[...portfolio].sort((a,b)=>b.weight-a.weight).slice(0,12);
+  const pieC=['#3C3489','#1D9E75','#E24B4A','#BA7517','#185FA5','#639922','#D4537E','#D85A30','#378ADD','#888780','#7F77DD','#5DCAA5'];
+  if(pieChart)pieChart.destroy();
+  pieChart=new Chart(document.getElementById('pieChart'),{
+    type:'doughnut',
+    data:{labels:top12.map(s=>s.name),datasets:[{data:top12.map(s=>parseFloat(s.weight.toFixed(2))),backgroundColor:pieC,borderWidth:2,borderColor:'transparent'}]},
+    options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{callbacks:{label:ctx=>ctx.label+': '+ctx.raw+'%'}}},cutout:'60%'}
+  });
+
+  document.getElementById('htblBody').innerHTML=stocks.map(s=>{
+    const cp=s.chg1d!==null?(s.chg1d>=0?'+':'')+(s.chg1d*100).toFixed(2)+'%':'\u2014';
+    const bc=s.chg1d===null?'w':s.chg1d>=0?'up':'down';
+    const ib=s.impact!==null?(s.impact>=0?'+':'')+s.impact.toFixed(1):'\u2014';
+    return '<tr>'+
+      '<td class="r" style="color:var(--t3)">'+s.index+'</td>'+
+      '<td class="nm">'+s.name+'</td>'+
+      '<td style="color:var(--t2);font-family:monospace;font-size:11px">'+s.symbol+'</td>'+
+      '<td class="r">'+s.weight.toFixed(2)+'%</td>'+
+      '<td class="r">'+(s.mv_cr>0?'\u20b9'+s.mv_cr.toLocaleString('en-IN',{maximumFractionDigits:0}):'\u2014')+'</td>'+
+      '<td class="r" style="color:var(--t2)">'+(s.prevClose?'\u20b9'+s.prevClose.toFixed(2):'\u2014')+'</td>'+
+      '<td class="r">'+(s.close?'\u20b9'+s.close.toFixed(2):'\u2014')+'</td>'+
+      '<td class="r"><span class="bdg '+bc+'">'+cp+'</span></td>'+
+      '<td class="r" style="color:'+(s.impact===null?'var(--t3)':s.impact>=0?'var(--green)':'var(--red)')+'">'+ib+'</td>'+
+    '</tr>';
+  }).join('');
+}
+
+// ── Local API (optional) ─────────────────────────────────────────────────
+// When served from Flask (localhost:7001), API calls are same-origin — no CORS
+const API = window.location.port ? '' : null;  // relative URL when on a server
+
+let apiReady = false;
+
+async function tryConnectAPI() {
+  try {
+    const r = await fetch('/status', {signal: AbortSignal.timeout(2000)});
+    if (!r.ok) return;
+    const d = await r.json();
+    if ((d.stocks_loaded||0) < 100) {
+      // Still loading — retry in 3 seconds
+      setTimeout(tryConnectAPI, 3000);
+      return;
+    }
+    apiReady = true;
+    log.info && log.info('API ready');
+    // Update badge
+    document.getElementById('bhavBadge').textContent = d.stocks_loaded.toLocaleString() + ' stocks via API ✓';
+    document.getElementById('bhavBadge').className = 'badge badge-ok';
+    // Update bhav panel
+    document.getElementById('bhavDrop').style.display = 'none';
+    document.getElementById('bhavPills').innerHTML =
+      '<div class="file-pill"><i class="ti ti-robot"></i>Live prices from NSE bhavcopy — auto-loaded<br>' +
+      '<small style="opacity:.7">Today: ' + (d.dates&&d.dates.today||'loading…') +
+      '  Week: ' + (d.dates&&d.dates.week||'—') +
+      '  Month: ' + (d.dates&&d.dates.month||'—') + '</small></div>';
+    document.querySelectorAll('.bhav-step').forEach(el => el.style.display = 'none');
+    checkEnableAnalyse();
+  } catch(e) {
+    // Not on a server — manual bhavcopy upload is fine
+  }
+}
+
+// Run analysis using API prices when available
+const _origRunAnalysis = runAnalysis;
+async function runAnalysis() {
+  if (!apiReady) { _origRunAnalysis(); return; }
+  clearNotes();
+
+  // Build portfolio from file
+  const getCM = f => { const el = document.getElementById('cm_'+f); return el&&el.value!=='' ? parseInt(el.value) : undefined; };
+  const symIdx=getCM('symbol'), nameIdx=getCM('name'), wtIdx=getCM('weight'), mvIdx=getCM('mv');
+  if (symIdx===undefined||wtIdx===undefined) { errNote('Please map the Symbol/ISIN and Weight columns.'); return; }
+
+  const get=(r,idx)=>idx!==undefined?String(r[idx]||'').trim():'';
+  portfolio = rawRows.map((r,i) => {
+    const rawSym=get(r,symIdx), rawName=get(r,nameIdx)||rawSym;
+    if (/\d+\.\d+%/.test(rawName)||/treps|t-bill|repo|treasury/i.test(rawName)) return null;
+    const sym=resolveSymbol(rawSym);
+    if (!sym) return null;
+    const rawW=get(r,wtIdx).replace(/[%,\s]/g,'');
+    let weight=parseFloat(rawW)||0;
+    if (weight>0&&weight<1) weight=weight*100;
+    const mv_cr=parseFloat(get(r,mvIdx).replace(/[,\s]/g,''))||0;
+    if (weight<=0) return null;
+    return {index:i+1, symbol:sym, name:rawName, weight, mv_cr};
+  }).filter(Boolean);
+
+  if (!portfolio.length) { errNote('No valid equity rows found. Check column mappings.'); return; }
+
+  st('Fetching prices from local API…');
+  try {
+    // Only send valid NSE symbols (no spaces, no fund names)
+    const validSyms = [...new Set(portfolio.map(s => s.symbol).filter(s => s && !/\s/.test(s) && s.length <= 20))];
+    const symStr = validSyms.join(',');
+
+    // Fetch today's prices
+    const r = await fetch('http://localhost:7001/prices?symbols=' + encodeURIComponent(symStr));
+    const d = await r.json();
+    bhavToday = {};
+    for (const [sym, entry] of Object.entries(d.found||{})) {
+      bhavToday[sym] = {close: entry.close, prevClose: entry.prevClose};
+    }
+
+    // Fetch week prices
+    bhavWeek = {};
+    try {
+      const rw = await fetch('http://localhost:7001/prices/week?symbols=' + encodeURIComponent(symStr));
+      const dw = await rw.json();
+      for (const [sym, entry] of Object.entries(dw.found||{})) {
+        bhavWeek[sym] = {close: entry.close};
+      }
+    } catch(e) {}
+
+    // Fetch month prices
+    bhavMonth = {};
+    try {
+      const monthUrl = 'http://localhost:7001/prices/month?symbols=' + encodeURIComponent(symStr);
+      const rm = await fetch(monthUrl);
+      const dm = await rm.json();
+
+      for (const [sym, entry] of Object.entries(dm.found||{})) {
+        bhavMonth[sym] = {close: entry.close};
+      }
+    } catch(e) { console.error('Month fetch error:', e.message); }
+
+    stOff();
+    if (!Object.keys(bhavToday).length) { errNote('No prices matched. Check symbols.'); return; }
+    render();
+    document.getElementById('results').classList.add('show');
+    document.getElementById('results').scrollIntoView({behavior:'smooth', block:'start'});
+  } catch(e) {
+    stOff(); errNote('API fetch failed: ' + e.message);
+  }
+}
+
+// Boot: try API silently
+setTimeout(tryConnectAPI, 500);
+
+</script>
+</body>
+</html>
