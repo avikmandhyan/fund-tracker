@@ -13,7 +13,7 @@ const API = window.location.port ? '' : null;  // relative URL when on a server
 let apiReady = false;
 
 async function tryConnectAPI() {
-  const URLS = ['http://localhost:7001/status', 'http://127.0.0.1:7001/status'];
+  const URLS = ['/status', 'http://localhost:7001/status', 'http://127.0.0.1:7001/status'];
   for (const url of URLS) {
     try {
       const r = await fetch(url, {signal: AbortSignal.timeout(3000)});
@@ -679,14 +679,17 @@ footer{text-align:center;font-size:11px;color:var(--t3);margin-top:2rem;font-fam
     </div>
     <div class="drop" id="pfDrop">
       <i class="ti ti-file-upload"></i>
-      <p>Drop portfolio file or click to browse</p>
+      <p>Drop portfolio file here</p>
       <small>Supports NSE tickers &amp; ISIN codes</small>
       <div class="ftbs">
         <span class="ftb csv">CSV</span>
         <span class="ftb xl">Excel</span>
         <span class="ftb pdf">PDF</span>
       </div>
-      <input type="file" id="pfFile" accept=".csv,.xlsx,.xls,.pdf">
+      <label for="pfFile" style="display:inline-block;margin-top:.6rem;padding:.4rem 1rem;background:var(--acc);color:#fff;border-radius:var(--r);font-family:sans-serif;font-size:13px;cursor:pointer">
+        Browse file
+      </label>
+      <input type="file" id="pfFile" accept=".csv,.xlsx,.xls,.pdf" style="display:none">
     </div>
     <div id="pfPill"></div>
     <div id="pfPreview" style="display:none">
@@ -704,7 +707,7 @@ footer{text-align:center;font-size:11px;color:var(--t3);margin-top:2rem;font-fam
     <div style="padding:1.25rem 1rem;font-family:sans-serif">
       <div style="display:flex;align-items:center;gap:.75rem;margin-bottom:1rem">
         <span id="apiDot" style="width:12px;height:12px;border-radius:50%;background:var(--amber);flex-shrink:0"></span>
-        <span id="apiStatusTxt" style="font-size:13px;color:var(--t2)">Connecting to local server…</span>
+        <span id="apiStatusTxt" style="font-size:13px;color:var(--t2)">Connecting to price server…</span>
       </div>
       <div id="apiDetails" style="display:none;background:var(--surface2);border-radius:var(--r);padding:.85rem;font-size:12px;color:var(--t2);line-height:2">
         <div><strong style="color:var(--text)">Today:</strong> <span id="dateToday">—</span></div>
@@ -856,7 +859,7 @@ function checkEnableAnalyse() {
 
 // ── Portfolio upload ──────────────────────────────────────────────────────
 const pfDrop = document.getElementById('pfDrop');
-pfDrop.addEventListener('click', ()=>document.getElementById('pfFile').click());
+// Upload triggered by label click — no need for drop zone click handler
 pfDrop.addEventListener('dragover', e=>{e.preventDefault();pfDrop.classList.add('over');});
 pfDrop.addEventListener('dragleave', ()=>pfDrop.classList.remove('over'));
 pfDrop.addEventListener('drop', e=>{e.preventDefault();pfDrop.classList.remove('over');if(e.dataTransfer.files[0])handlePfFile(e.dataTransfer.files[0]);});
