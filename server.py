@@ -1,4 +1,4 @@
-server#!/usr/bin/env python3
+#!/usr/bin/env python3
 """
 NSE Fund Tracker — All-in-one server
 Serves the HTML tool AND fetches bhavcopy data.
