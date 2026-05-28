@@ -559,12 +559,26 @@ async function runAnalysis(){
     const rawW=get(r,wtIdx).replace(/[%,\s]/g,'');
     let weight=parseFloat(rawW)||0;
     if(weight>0&&weight<1)weight=weight*100;
-    const mv_cr=parseFloat(get(r,mvIdx).replace(/[,\s]/g,''))||0;
+    const mv_raw=parseFloat(get(r,mvIdx).replace(/[,\s]/g,''))||0;
     if(weight<=0)return null;
-    return{index:i+1,symbol:sym,name:rawName,weight,mv_cr};
+    return{index:i+1,symbol:sym,name:rawName,weight,mv_raw};
   }).filter(Boolean);
 
   if(!portfolio.length){errNote('No valid equity rows found. Check column mappings.');return;}
+
+  // Auto-detect if MV is in Lakhs or Crores
+  // If median MV per stock > 500, it's likely in Lakhs (e.g. 7622 lakhs = ₹76 Cr)
+  // If median MV < 500, it's likely already in Crores
+  const mvVals = portfolio.map(s=>s.mv_raw).filter(v=>v>0).sort((a,b)=>a-b);
+  const medianMV = mvVals[Math.floor(mvVals.length/2)] || 0;
+  // Column header hint: if header contains 'lakh' or 'lac', divide by 100
+  const mvHeader = rawHeaders[colMap.mv!==undefined?colMap.mv:(()=>{const el=document.getElementById('cm_mv');return el?parseInt(el.value):-1;})()]||'';
+  const isLakhs = /lakh|lac/i.test(mvHeader) || medianMV > 500;
+  const mvDivisor = isLakhs ? 100 : 1;
+  portfolio.forEach(s => { s.mv_cr = s.mv_raw / mvDivisor; });
+
+  // Store column mapping for MV unit detection
+  colMap = {symbol:symIdx, name:nameIdx, weight:wtIdx, mv:mvIdx};
 
   if(apiReady){
     st('Fetching prices…');
