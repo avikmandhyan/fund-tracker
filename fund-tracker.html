@@ -572,13 +572,10 @@ async function runAnalysis(){
   const mvVals = portfolio.map(s=>s.mv_raw).filter(v=>v>0).sort((a,b)=>a-b);
   const medianMV = mvVals[Math.floor(mvVals.length/2)] || 0;
   // Column header hint: if header contains 'lakh' or 'lac', divide by 100
-  const mvHeader = rawHeaders[colMap.mv!==undefined?colMap.mv:(()=>{const el=document.getElementById('cm_mv');return el?parseInt(el.value):-1;})()]||'';
+  const mvHeader = (mvIdx!==undefined && rawHeaders[mvIdx]) ? rawHeaders[mvIdx] : '';
   const isLakhs = /lakh|lac/i.test(mvHeader) || medianMV > 500;
   const mvDivisor = isLakhs ? 100 : 1;
   portfolio.forEach(s => { s.mv_cr = s.mv_raw / mvDivisor; });
-
-  // Store column mapping for MV unit detection
-  colMap = {symbol:symIdx, name:nameIdx, weight:wtIdx, mv:mvIdx};
 
   if(apiReady){
     st('Fetching prices…');
