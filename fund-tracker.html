@@ -5,11 +5,1116 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Fund Portfolio Tracker</title>
 <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@tabler/icons-webfont@latest/tabler-icons.min.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js">
+// ── Benchmark & NAV Comparison ────────────────────────────────────────────
+const NIFTY_SCHEME = 120716;  // UTI Nifty 50 Index Fund Regular Growth
+let bmarkData = {fund: null, nifty: null, period: '1d', schemeCode: null, schemeName: ''};
+
+async function mfapiFetch(code) {
+  const url = `https://api.mfapi.in/mf/${code}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(8000)});
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+async function mfapiSearch(q) {
+  const url = `https://api.mfapi.in/mf/search?q=${encodeURIComponent(q)}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(5000)});
+  if (!r.ok) return [];
+  return r.json();
+}
+
+async function bmarkSearch(q) {
+  const res = document.getElementById('bmarkResults');
+  if (!q || q.length < 3) { res.style.display='none'; return; }
+  // If it looks like a number, don't search
+  if (/^\d+$/.test(q.trim())) { res.style.display='none'; return; }
+  try {
+    const results = await mfapiSearch(q);
+    if (!results.length) { res.style.display='none'; return; }
+    res.innerHTML = results.slice(0,8).map(f =>
+      `<div class="bmark-item" onclick="bmarkSelect(${f.schemeCode}, '${f.schemeName.replace(/'/g,"\'")}')">
+        ${f.schemeName}<br><span class="bmark-code">Code: ${f.schemeCode}</span>
+      </div>`
+    ).join('');
+    res.style.display = 'block';
+  } catch(e) { res.style.display='none'; }
+}
+
+async function bmarkSelect(code, name) {
+  document.getElementById('bmarkInput').value = name;
+  document.getElementById('bmarkResults').style.display = 'none';
+  bmarkData.schemeCode = code;
+  bmarkData.schemeName = name;
+  await loadBmarkData();
+}
+
+async function bmarkFetchByCode(val) {
+  document.getElementById('bmarkResults').style.display = 'none';
+  const code = parseInt(val.trim());
+  if (isNaN(code)) {
+    // Try search
+    const results = await mfapiSearch(val);
+    if (results && results.length > 0) {
+      await bmarkSelect(results[0].schemeCode, results[0].schemeName);
+    }
+    return;
+  }
+  bmarkData.schemeCode = code;
+  try {
+    const d = await mfapiFetch(code);
+    bmarkData.schemeName = d.meta?.scheme_name || 'Fund ' + code;
+    document.getElementById('bmarkInput').value = bmarkData.schemeName;
+  } catch(e) {}
+  await loadBmarkData();
+}
+
+async function loadBmarkData() {
+  const st = document.getElementById('bmarkStatus');
+  const grid = document.getElementById('bmarkGrid');
+  st.textContent = 'Loading NAV data…';
+  st.style.display = 'block';
+  grid.style.display = 'none';
+
+  try {
+    // Fetch fund NAV and Nifty NAV in parallel
+    const [fundData, niftyData] = await Promise.all([
+      mfapiFetch(bmarkData.schemeCode),
+      mfapiFetch(NIFTY_SCHEME)
+    ]);
+
+    bmarkData.fund = fundData.data;   // [{date, nav}, ...]
+    bmarkData.nifty = niftyData.data;
+    bmarkData.schemeName = fundData.meta?.scheme_name || bmarkData.schemeName;
+
+    const fn = document.getElementById('bmarkFundName');
+    fn.textContent = bmarkData.schemeName;
+    fn.style.display = 'block';
+
+    st.style.display = 'none';
+    renderBmark();
+    document.getElementById('bmarkPanel').style.display = 'block';
+  } catch(e) {
+    st.textContent = 'Could not load NAV data: ' + e.message;
+  }
+}
+
+function navOnDate(navArr, targetDateStr) {
+  // navArr is sorted newest first: [{date: "28-May-2026", nav: "70.21"}, ...]
+  // Find entry on or just before targetDateStr
+  // targetDateStr format: "YYYY-MM-DD"
+  const target = new Date(targetDateStr);
+  for (const entry of navArr) {
+    const parts = entry.date.split('-');
+    const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+    const d = new Date(parseInt(parts[2]), months[parts[1]], parseInt(parts[0]));
+    if (d <= target) return parseFloat(entry.nav);
+  }
+  return null;
+}
+
+function setBmarkPeriod(p, btn) {
+  bmarkData.period = p;
+  document.querySelectorAll('.bmark-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (bmarkData.fund) renderBmark();
+}
+
+function renderBmark() {
+  const grid = document.getElementById('bmarkGrid');
+  const p = bmarkData.period;
+
+  // Get dates from our price data
+  const todayStr = db_dates.today || '';
+  const weekStr  = db_dates.week  || '';
+  const monthStr = db_dates.month || '';
+  const baseStr  = p==='1d' ? todayStr : p==='1w' ? weekStr : monthStr;
+
+  // Fund NAV change
+  const navToday = bmarkData.fund ? bmarkData.fund[0] ? parseFloat(bmarkData.fund[0].nav) : null : null;
+  const navBase  = bmarkData.fund ? navOnDate(bmarkData.fund, baseStr) : null;
+  // For 1D, prev close = second entry OR use prevClose field
+  const navPrev1d = bmarkData.fund && bmarkData.fund[1] ? parseFloat(bmarkData.fund[1].nav) : null;
+
+  let fundChgNav = null;
+  if (p === '1d' && navToday && navPrev1d) {
+    fundChgNav = (navToday - navPrev1d) / navPrev1d;
+  } else if (navToday && navBase && p !== '1d') {
+    fundChgNav = (navToday - navBase) / navBase;
+  }
+
+  // Nifty NAV change
+  const niftyToday = bmarkData.nifty ? parseFloat(bmarkData.nifty[0]?.nav) : null;
+  const niftyPrev1d = bmarkData.nifty ? parseFloat(bmarkData.nifty[1]?.nav) : null;
+  const niftyBase = bmarkData.nifty ? navOnDate(bmarkData.nifty, baseStr) : null;
+
+  let niftyChg = null;
+  if (p === '1d' && niftyToday && niftyPrev1d) {
+    niftyChg = (niftyToday - niftyPrev1d) / niftyPrev1d;
+  } else if (niftyToday && niftyBase && p !== '1d') {
+    niftyChg = (niftyToday - niftyBase) / niftyBase;
+  }
+
+  // Our tool's equity calculation
+  const toolChg = portfolio.length ? (() => {
+    let tot = 0;
+    portfolio.forEach(s => {
+      const today = lookupBhav(bhavToday, s.symbol);
+      if (!today) return;
+      const base = p==='1d' ? {close: today.prevClose} : p==='1w' ? lookupBhav(bhavWeek,s.symbol) : lookupBhav(bhavMonth,s.symbol);
+      if (!base || !base.close || !today.close) return;
+      tot += ((today.close - base.close) / base.close) * (s.weight/100);
+    });
+    return tot;
+  })() : null;
+
+  // Alpha
+  const alpha = (fundChgNav !== null && niftyChg !== null) ? fundChgNav - niftyChg : null;
+  const toolAlpha = (toolChg !== null && niftyChg !== null) ? toolChg - niftyChg : null;
+
+  const fmt = v => v !== null ? (v>=0?'+':'')+(v*100).toFixed(2)+'%' : '—';
+  const plbl = p==='1d'?'1 Day':p==='1w'?'1 Week':'1 Month';
+
+  const cards = [
+    {
+      lbl: 'Official NAV (' + plbl + ')',
+      val: fmt(fundChgNav),
+      sub: navToday ? '₹' + navToday.toFixed(4) + ' (latest NAV)' : 'via mfapi.in',
+      cls: fundChgNav===null?'neu':fundChgNav>=0?'up':'down'
+    },
+    {
+      lbl: 'Nifty 50 (' + plbl + ')',
+      val: fmt(niftyChg),
+      sub: niftyToday ? 'UTI Nifty 50 Index Fund' : 'via mfapi.in',
+      cls: niftyChg===null?'neu':niftyChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Our Equity Calc (' + plbl + ')',
+      val: fmt(toolChg),
+      sub: 'From matched portfolio stocks',
+      cls: toolChg===null?'neu':toolChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Fund Alpha vs Nifty',
+      val: fmt(alpha),
+      sub: 'Official NAV minus Nifty',
+      cls: alpha===null?'neu':alpha>=0?'alpha-pos':'alpha-neg'
+    },
+    {
+      lbl: 'Equity Alpha vs Nifty',
+      val: fmt(toolAlpha),
+      sub: 'Equity portion minus Nifty',
+      cls: toolAlpha===null?'neu':toolAlpha>=0?'alpha-pos':'alpha-neg'
+    },
+  ];
+
+  grid.innerHTML = cards.map(c =>
+    `<div class="bmark-card ${c.cls}">
+      <div class="bc-lbl">${c.lbl}</div>
+      <div class="bc-val">${c.val}</div>
+      <div class="bc-sub">${c.sub}</div>
+    </div>`
+  ).join('');
+  grid.style.display = 'grid';
+}
+
+// Show benchmark panel after analysis runs
+const _origRender = render;
+function render() {
+  _origRender();
+  document.getElementById('bmarkPanel').style.display = 'block';
+  if (bmarkData.fund) renderBmark();
+}
+
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js">
+// ── Benchmark & NAV Comparison ────────────────────────────────────────────
+const NIFTY_SCHEME = 120716;  // UTI Nifty 50 Index Fund Regular Growth
+let bmarkData = {fund: null, nifty: null, period: '1d', schemeCode: null, schemeName: ''};
+
+async function mfapiFetch(code) {
+  const url = `https://api.mfapi.in/mf/${code}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(8000)});
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+async function mfapiSearch(q) {
+  const url = `https://api.mfapi.in/mf/search?q=${encodeURIComponent(q)}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(5000)});
+  if (!r.ok) return [];
+  return r.json();
+}
+
+async function bmarkSearch(q) {
+  const res = document.getElementById('bmarkResults');
+  if (!q || q.length < 3) { res.style.display='none'; return; }
+  // If it looks like a number, don't search
+  if (/^\d+$/.test(q.trim())) { res.style.display='none'; return; }
+  try {
+    const results = await mfapiSearch(q);
+    if (!results.length) { res.style.display='none'; return; }
+    res.innerHTML = results.slice(0,8).map(f =>
+      `<div class="bmark-item" onclick="bmarkSelect(${f.schemeCode}, '${f.schemeName.replace(/'/g,"\'")}')">
+        ${f.schemeName}<br><span class="bmark-code">Code: ${f.schemeCode}</span>
+      </div>`
+    ).join('');
+    res.style.display = 'block';
+  } catch(e) { res.style.display='none'; }
+}
+
+async function bmarkSelect(code, name) {
+  document.getElementById('bmarkInput').value = name;
+  document.getElementById('bmarkResults').style.display = 'none';
+  bmarkData.schemeCode = code;
+  bmarkData.schemeName = name;
+  await loadBmarkData();
+}
+
+async function bmarkFetchByCode(val) {
+  document.getElementById('bmarkResults').style.display = 'none';
+  const code = parseInt(val.trim());
+  if (isNaN(code)) {
+    // Try search
+    const results = await mfapiSearch(val);
+    if (results && results.length > 0) {
+      await bmarkSelect(results[0].schemeCode, results[0].schemeName);
+    }
+    return;
+  }
+  bmarkData.schemeCode = code;
+  try {
+    const d = await mfapiFetch(code);
+    bmarkData.schemeName = d.meta?.scheme_name || 'Fund ' + code;
+    document.getElementById('bmarkInput').value = bmarkData.schemeName;
+  } catch(e) {}
+  await loadBmarkData();
+}
+
+async function loadBmarkData() {
+  const st = document.getElementById('bmarkStatus');
+  const grid = document.getElementById('bmarkGrid');
+  st.textContent = 'Loading NAV data…';
+  st.style.display = 'block';
+  grid.style.display = 'none';
+
+  try {
+    // Fetch fund NAV and Nifty NAV in parallel
+    const [fundData, niftyData] = await Promise.all([
+      mfapiFetch(bmarkData.schemeCode),
+      mfapiFetch(NIFTY_SCHEME)
+    ]);
+
+    bmarkData.fund = fundData.data;   // [{date, nav}, ...]
+    bmarkData.nifty = niftyData.data;
+    bmarkData.schemeName = fundData.meta?.scheme_name || bmarkData.schemeName;
+
+    const fn = document.getElementById('bmarkFundName');
+    fn.textContent = bmarkData.schemeName;
+    fn.style.display = 'block';
+
+    st.style.display = 'none';
+    renderBmark();
+    document.getElementById('bmarkPanel').style.display = 'block';
+  } catch(e) {
+    st.textContent = 'Could not load NAV data: ' + e.message;
+  }
+}
+
+function navOnDate(navArr, targetDateStr) {
+  // navArr is sorted newest first: [{date: "28-May-2026", nav: "70.21"}, ...]
+  // Find entry on or just before targetDateStr
+  // targetDateStr format: "YYYY-MM-DD"
+  const target = new Date(targetDateStr);
+  for (const entry of navArr) {
+    const parts = entry.date.split('-');
+    const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+    const d = new Date(parseInt(parts[2]), months[parts[1]], parseInt(parts[0]));
+    if (d <= target) return parseFloat(entry.nav);
+  }
+  return null;
+}
+
+function setBmarkPeriod(p, btn) {
+  bmarkData.period = p;
+  document.querySelectorAll('.bmark-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (bmarkData.fund) renderBmark();
+}
+
+function renderBmark() {
+  const grid = document.getElementById('bmarkGrid');
+  const p = bmarkData.period;
+
+  // Get dates from our price data
+  const todayStr = db_dates.today || '';
+  const weekStr  = db_dates.week  || '';
+  const monthStr = db_dates.month || '';
+  const baseStr  = p==='1d' ? todayStr : p==='1w' ? weekStr : monthStr;
+
+  // Fund NAV change
+  const navToday = bmarkData.fund ? bmarkData.fund[0] ? parseFloat(bmarkData.fund[0].nav) : null : null;
+  const navBase  = bmarkData.fund ? navOnDate(bmarkData.fund, baseStr) : null;
+  // For 1D, prev close = second entry OR use prevClose field
+  const navPrev1d = bmarkData.fund && bmarkData.fund[1] ? parseFloat(bmarkData.fund[1].nav) : null;
+
+  let fundChgNav = null;
+  if (p === '1d' && navToday && navPrev1d) {
+    fundChgNav = (navToday - navPrev1d) / navPrev1d;
+  } else if (navToday && navBase && p !== '1d') {
+    fundChgNav = (navToday - navBase) / navBase;
+  }
+
+  // Nifty NAV change
+  const niftyToday = bmarkData.nifty ? parseFloat(bmarkData.nifty[0]?.nav) : null;
+  const niftyPrev1d = bmarkData.nifty ? parseFloat(bmarkData.nifty[1]?.nav) : null;
+  const niftyBase = bmarkData.nifty ? navOnDate(bmarkData.nifty, baseStr) : null;
+
+  let niftyChg = null;
+  if (p === '1d' && niftyToday && niftyPrev1d) {
+    niftyChg = (niftyToday - niftyPrev1d) / niftyPrev1d;
+  } else if (niftyToday && niftyBase && p !== '1d') {
+    niftyChg = (niftyToday - niftyBase) / niftyBase;
+  }
+
+  // Our tool's equity calculation
+  const toolChg = portfolio.length ? (() => {
+    let tot = 0;
+    portfolio.forEach(s => {
+      const today = lookupBhav(bhavToday, s.symbol);
+      if (!today) return;
+      const base = p==='1d' ? {close: today.prevClose} : p==='1w' ? lookupBhav(bhavWeek,s.symbol) : lookupBhav(bhavMonth,s.symbol);
+      if (!base || !base.close || !today.close) return;
+      tot += ((today.close - base.close) / base.close) * (s.weight/100);
+    });
+    return tot;
+  })() : null;
+
+  // Alpha
+  const alpha = (fundChgNav !== null && niftyChg !== null) ? fundChgNav - niftyChg : null;
+  const toolAlpha = (toolChg !== null && niftyChg !== null) ? toolChg - niftyChg : null;
+
+  const fmt = v => v !== null ? (v>=0?'+':'')+(v*100).toFixed(2)+'%' : '—';
+  const plbl = p==='1d'?'1 Day':p==='1w'?'1 Week':'1 Month';
+
+  const cards = [
+    {
+      lbl: 'Official NAV (' + plbl + ')',
+      val: fmt(fundChgNav),
+      sub: navToday ? '₹' + navToday.toFixed(4) + ' (latest NAV)' : 'via mfapi.in',
+      cls: fundChgNav===null?'neu':fundChgNav>=0?'up':'down'
+    },
+    {
+      lbl: 'Nifty 50 (' + plbl + ')',
+      val: fmt(niftyChg),
+      sub: niftyToday ? 'UTI Nifty 50 Index Fund' : 'via mfapi.in',
+      cls: niftyChg===null?'neu':niftyChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Our Equity Calc (' + plbl + ')',
+      val: fmt(toolChg),
+      sub: 'From matched portfolio stocks',
+      cls: toolChg===null?'neu':toolChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Fund Alpha vs Nifty',
+      val: fmt(alpha),
+      sub: 'Official NAV minus Nifty',
+      cls: alpha===null?'neu':alpha>=0?'alpha-pos':'alpha-neg'
+    },
+    {
+      lbl: 'Equity Alpha vs Nifty',
+      val: fmt(toolAlpha),
+      sub: 'Equity portion minus Nifty',
+      cls: toolAlpha===null?'neu':toolAlpha>=0?'alpha-pos':'alpha-neg'
+    },
+  ];
+
+  grid.innerHTML = cards.map(c =>
+    `<div class="bmark-card ${c.cls}">
+      <div class="bc-lbl">${c.lbl}</div>
+      <div class="bc-val">${c.val}</div>
+      <div class="bc-sub">${c.sub}</div>
+    </div>`
+  ).join('');
+  grid.style.display = 'grid';
+}
+
+// Show benchmark panel after analysis runs
+const _origRender = render;
+function render() {
+  _origRender();
+  document.getElementById('bmarkPanel').style.display = 'block';
+  if (bmarkData.fund) renderBmark();
+}
+
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js">
+// ── Benchmark & NAV Comparison ────────────────────────────────────────────
+const NIFTY_SCHEME = 120716;  // UTI Nifty 50 Index Fund Regular Growth
+let bmarkData = {fund: null, nifty: null, period: '1d', schemeCode: null, schemeName: ''};
+
+async function mfapiFetch(code) {
+  const url = `https://api.mfapi.in/mf/${code}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(8000)});
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+async function mfapiSearch(q) {
+  const url = `https://api.mfapi.in/mf/search?q=${encodeURIComponent(q)}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(5000)});
+  if (!r.ok) return [];
+  return r.json();
+}
+
+async function bmarkSearch(q) {
+  const res = document.getElementById('bmarkResults');
+  if (!q || q.length < 3) { res.style.display='none'; return; }
+  // If it looks like a number, don't search
+  if (/^\d+$/.test(q.trim())) { res.style.display='none'; return; }
+  try {
+    const results = await mfapiSearch(q);
+    if (!results.length) { res.style.display='none'; return; }
+    res.innerHTML = results.slice(0,8).map(f =>
+      `<div class="bmark-item" onclick="bmarkSelect(${f.schemeCode}, '${f.schemeName.replace(/'/g,"\'")}')">
+        ${f.schemeName}<br><span class="bmark-code">Code: ${f.schemeCode}</span>
+      </div>`
+    ).join('');
+    res.style.display = 'block';
+  } catch(e) { res.style.display='none'; }
+}
+
+async function bmarkSelect(code, name) {
+  document.getElementById('bmarkInput').value = name;
+  document.getElementById('bmarkResults').style.display = 'none';
+  bmarkData.schemeCode = code;
+  bmarkData.schemeName = name;
+  await loadBmarkData();
+}
+
+async function bmarkFetchByCode(val) {
+  document.getElementById('bmarkResults').style.display = 'none';
+  const code = parseInt(val.trim());
+  if (isNaN(code)) {
+    // Try search
+    const results = await mfapiSearch(val);
+    if (results && results.length > 0) {
+      await bmarkSelect(results[0].schemeCode, results[0].schemeName);
+    }
+    return;
+  }
+  bmarkData.schemeCode = code;
+  try {
+    const d = await mfapiFetch(code);
+    bmarkData.schemeName = d.meta?.scheme_name || 'Fund ' + code;
+    document.getElementById('bmarkInput').value = bmarkData.schemeName;
+  } catch(e) {}
+  await loadBmarkData();
+}
+
+async function loadBmarkData() {
+  const st = document.getElementById('bmarkStatus');
+  const grid = document.getElementById('bmarkGrid');
+  st.textContent = 'Loading NAV data…';
+  st.style.display = 'block';
+  grid.style.display = 'none';
+
+  try {
+    // Fetch fund NAV and Nifty NAV in parallel
+    const [fundData, niftyData] = await Promise.all([
+      mfapiFetch(bmarkData.schemeCode),
+      mfapiFetch(NIFTY_SCHEME)
+    ]);
+
+    bmarkData.fund = fundData.data;   // [{date, nav}, ...]
+    bmarkData.nifty = niftyData.data;
+    bmarkData.schemeName = fundData.meta?.scheme_name || bmarkData.schemeName;
+
+    const fn = document.getElementById('bmarkFundName');
+    fn.textContent = bmarkData.schemeName;
+    fn.style.display = 'block';
+
+    st.style.display = 'none';
+    renderBmark();
+    document.getElementById('bmarkPanel').style.display = 'block';
+  } catch(e) {
+    st.textContent = 'Could not load NAV data: ' + e.message;
+  }
+}
+
+function navOnDate(navArr, targetDateStr) {
+  // navArr is sorted newest first: [{date: "28-May-2026", nav: "70.21"}, ...]
+  // Find entry on or just before targetDateStr
+  // targetDateStr format: "YYYY-MM-DD"
+  const target = new Date(targetDateStr);
+  for (const entry of navArr) {
+    const parts = entry.date.split('-');
+    const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+    const d = new Date(parseInt(parts[2]), months[parts[1]], parseInt(parts[0]));
+    if (d <= target) return parseFloat(entry.nav);
+  }
+  return null;
+}
+
+function setBmarkPeriod(p, btn) {
+  bmarkData.period = p;
+  document.querySelectorAll('.bmark-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (bmarkData.fund) renderBmark();
+}
+
+function renderBmark() {
+  const grid = document.getElementById('bmarkGrid');
+  const p = bmarkData.period;
+
+  // Get dates from our price data
+  const todayStr = db_dates.today || '';
+  const weekStr  = db_dates.week  || '';
+  const monthStr = db_dates.month || '';
+  const baseStr  = p==='1d' ? todayStr : p==='1w' ? weekStr : monthStr;
+
+  // Fund NAV change
+  const navToday = bmarkData.fund ? bmarkData.fund[0] ? parseFloat(bmarkData.fund[0].nav) : null : null;
+  const navBase  = bmarkData.fund ? navOnDate(bmarkData.fund, baseStr) : null;
+  // For 1D, prev close = second entry OR use prevClose field
+  const navPrev1d = bmarkData.fund && bmarkData.fund[1] ? parseFloat(bmarkData.fund[1].nav) : null;
+
+  let fundChgNav = null;
+  if (p === '1d' && navToday && navPrev1d) {
+    fundChgNav = (navToday - navPrev1d) / navPrev1d;
+  } else if (navToday && navBase && p !== '1d') {
+    fundChgNav = (navToday - navBase) / navBase;
+  }
+
+  // Nifty NAV change
+  const niftyToday = bmarkData.nifty ? parseFloat(bmarkData.nifty[0]?.nav) : null;
+  const niftyPrev1d = bmarkData.nifty ? parseFloat(bmarkData.nifty[1]?.nav) : null;
+  const niftyBase = bmarkData.nifty ? navOnDate(bmarkData.nifty, baseStr) : null;
+
+  let niftyChg = null;
+  if (p === '1d' && niftyToday && niftyPrev1d) {
+    niftyChg = (niftyToday - niftyPrev1d) / niftyPrev1d;
+  } else if (niftyToday && niftyBase && p !== '1d') {
+    niftyChg = (niftyToday - niftyBase) / niftyBase;
+  }
+
+  // Our tool's equity calculation
+  const toolChg = portfolio.length ? (() => {
+    let tot = 0;
+    portfolio.forEach(s => {
+      const today = lookupBhav(bhavToday, s.symbol);
+      if (!today) return;
+      const base = p==='1d' ? {close: today.prevClose} : p==='1w' ? lookupBhav(bhavWeek,s.symbol) : lookupBhav(bhavMonth,s.symbol);
+      if (!base || !base.close || !today.close) return;
+      tot += ((today.close - base.close) / base.close) * (s.weight/100);
+    });
+    return tot;
+  })() : null;
+
+  // Alpha
+  const alpha = (fundChgNav !== null && niftyChg !== null) ? fundChgNav - niftyChg : null;
+  const toolAlpha = (toolChg !== null && niftyChg !== null) ? toolChg - niftyChg : null;
+
+  const fmt = v => v !== null ? (v>=0?'+':'')+(v*100).toFixed(2)+'%' : '—';
+  const plbl = p==='1d'?'1 Day':p==='1w'?'1 Week':'1 Month';
+
+  const cards = [
+    {
+      lbl: 'Official NAV (' + plbl + ')',
+      val: fmt(fundChgNav),
+      sub: navToday ? '₹' + navToday.toFixed(4) + ' (latest NAV)' : 'via mfapi.in',
+      cls: fundChgNav===null?'neu':fundChgNav>=0?'up':'down'
+    },
+    {
+      lbl: 'Nifty 50 (' + plbl + ')',
+      val: fmt(niftyChg),
+      sub: niftyToday ? 'UTI Nifty 50 Index Fund' : 'via mfapi.in',
+      cls: niftyChg===null?'neu':niftyChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Our Equity Calc (' + plbl + ')',
+      val: fmt(toolChg),
+      sub: 'From matched portfolio stocks',
+      cls: toolChg===null?'neu':toolChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Fund Alpha vs Nifty',
+      val: fmt(alpha),
+      sub: 'Official NAV minus Nifty',
+      cls: alpha===null?'neu':alpha>=0?'alpha-pos':'alpha-neg'
+    },
+    {
+      lbl: 'Equity Alpha vs Nifty',
+      val: fmt(toolAlpha),
+      sub: 'Equity portion minus Nifty',
+      cls: toolAlpha===null?'neu':toolAlpha>=0?'alpha-pos':'alpha-neg'
+    },
+  ];
+
+  grid.innerHTML = cards.map(c =>
+    `<div class="bmark-card ${c.cls}">
+      <div class="bc-lbl">${c.lbl}</div>
+      <div class="bc-val">${c.val}</div>
+      <div class="bc-sub">${c.sub}</div>
+    </div>`
+  ).join('');
+  grid.style.display = 'grid';
+}
+
+// Show benchmark panel after analysis runs
+const _origRender = render;
+function render() {
+  _origRender();
+  document.getElementById('bmarkPanel').style.display = 'block';
+  if (bmarkData.fund) renderBmark();
+}
+
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js">
+// ── Benchmark & NAV Comparison ────────────────────────────────────────────
+const NIFTY_SCHEME = 120716;  // UTI Nifty 50 Index Fund Regular Growth
+let bmarkData = {fund: null, nifty: null, period: '1d', schemeCode: null, schemeName: ''};
+
+async function mfapiFetch(code) {
+  const url = `https://api.mfapi.in/mf/${code}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(8000)});
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+async function mfapiSearch(q) {
+  const url = `https://api.mfapi.in/mf/search?q=${encodeURIComponent(q)}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(5000)});
+  if (!r.ok) return [];
+  return r.json();
+}
+
+async function bmarkSearch(q) {
+  const res = document.getElementById('bmarkResults');
+  if (!q || q.length < 3) { res.style.display='none'; return; }
+  // If it looks like a number, don't search
+  if (/^\d+$/.test(q.trim())) { res.style.display='none'; return; }
+  try {
+    const results = await mfapiSearch(q);
+    if (!results.length) { res.style.display='none'; return; }
+    res.innerHTML = results.slice(0,8).map(f =>
+      `<div class="bmark-item" onclick="bmarkSelect(${f.schemeCode}, '${f.schemeName.replace(/'/g,"\'")}')">
+        ${f.schemeName}<br><span class="bmark-code">Code: ${f.schemeCode}</span>
+      </div>`
+    ).join('');
+    res.style.display = 'block';
+  } catch(e) { res.style.display='none'; }
+}
+
+async function bmarkSelect(code, name) {
+  document.getElementById('bmarkInput').value = name;
+  document.getElementById('bmarkResults').style.display = 'none';
+  bmarkData.schemeCode = code;
+  bmarkData.schemeName = name;
+  await loadBmarkData();
+}
+
+async function bmarkFetchByCode(val) {
+  document.getElementById('bmarkResults').style.display = 'none';
+  const code = parseInt(val.trim());
+  if (isNaN(code)) {
+    // Try search
+    const results = await mfapiSearch(val);
+    if (results && results.length > 0) {
+      await bmarkSelect(results[0].schemeCode, results[0].schemeName);
+    }
+    return;
+  }
+  bmarkData.schemeCode = code;
+  try {
+    const d = await mfapiFetch(code);
+    bmarkData.schemeName = d.meta?.scheme_name || 'Fund ' + code;
+    document.getElementById('bmarkInput').value = bmarkData.schemeName;
+  } catch(e) {}
+  await loadBmarkData();
+}
+
+async function loadBmarkData() {
+  const st = document.getElementById('bmarkStatus');
+  const grid = document.getElementById('bmarkGrid');
+  st.textContent = 'Loading NAV data…';
+  st.style.display = 'block';
+  grid.style.display = 'none';
+
+  try {
+    // Fetch fund NAV and Nifty NAV in parallel
+    const [fundData, niftyData] = await Promise.all([
+      mfapiFetch(bmarkData.schemeCode),
+      mfapiFetch(NIFTY_SCHEME)
+    ]);
+
+    bmarkData.fund = fundData.data;   // [{date, nav}, ...]
+    bmarkData.nifty = niftyData.data;
+    bmarkData.schemeName = fundData.meta?.scheme_name || bmarkData.schemeName;
+
+    const fn = document.getElementById('bmarkFundName');
+    fn.textContent = bmarkData.schemeName;
+    fn.style.display = 'block';
+
+    st.style.display = 'none';
+    renderBmark();
+    document.getElementById('bmarkPanel').style.display = 'block';
+  } catch(e) {
+    st.textContent = 'Could not load NAV data: ' + e.message;
+  }
+}
+
+function navOnDate(navArr, targetDateStr) {
+  // navArr is sorted newest first: [{date: "28-May-2026", nav: "70.21"}, ...]
+  // Find entry on or just before targetDateStr
+  // targetDateStr format: "YYYY-MM-DD"
+  const target = new Date(targetDateStr);
+  for (const entry of navArr) {
+    const parts = entry.date.split('-');
+    const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+    const d = new Date(parseInt(parts[2]), months[parts[1]], parseInt(parts[0]));
+    if (d <= target) return parseFloat(entry.nav);
+  }
+  return null;
+}
+
+function setBmarkPeriod(p, btn) {
+  bmarkData.period = p;
+  document.querySelectorAll('.bmark-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (bmarkData.fund) renderBmark();
+}
+
+function renderBmark() {
+  const grid = document.getElementById('bmarkGrid');
+  const p = bmarkData.period;
+
+  // Get dates from our price data
+  const todayStr = db_dates.today || '';
+  const weekStr  = db_dates.week  || '';
+  const monthStr = db_dates.month || '';
+  const baseStr  = p==='1d' ? todayStr : p==='1w' ? weekStr : monthStr;
+
+  // Fund NAV change
+  const navToday = bmarkData.fund ? bmarkData.fund[0] ? parseFloat(bmarkData.fund[0].nav) : null : null;
+  const navBase  = bmarkData.fund ? navOnDate(bmarkData.fund, baseStr) : null;
+  // For 1D, prev close = second entry OR use prevClose field
+  const navPrev1d = bmarkData.fund && bmarkData.fund[1] ? parseFloat(bmarkData.fund[1].nav) : null;
+
+  let fundChgNav = null;
+  if (p === '1d' && navToday && navPrev1d) {
+    fundChgNav = (navToday - navPrev1d) / navPrev1d;
+  } else if (navToday && navBase && p !== '1d') {
+    fundChgNav = (navToday - navBase) / navBase;
+  }
+
+  // Nifty NAV change
+  const niftyToday = bmarkData.nifty ? parseFloat(bmarkData.nifty[0]?.nav) : null;
+  const niftyPrev1d = bmarkData.nifty ? parseFloat(bmarkData.nifty[1]?.nav) : null;
+  const niftyBase = bmarkData.nifty ? navOnDate(bmarkData.nifty, baseStr) : null;
+
+  let niftyChg = null;
+  if (p === '1d' && niftyToday && niftyPrev1d) {
+    niftyChg = (niftyToday - niftyPrev1d) / niftyPrev1d;
+  } else if (niftyToday && niftyBase && p !== '1d') {
+    niftyChg = (niftyToday - niftyBase) / niftyBase;
+  }
+
+  // Our tool's equity calculation
+  const toolChg = portfolio.length ? (() => {
+    let tot = 0;
+    portfolio.forEach(s => {
+      const today = lookupBhav(bhavToday, s.symbol);
+      if (!today) return;
+      const base = p==='1d' ? {close: today.prevClose} : p==='1w' ? lookupBhav(bhavWeek,s.symbol) : lookupBhav(bhavMonth,s.symbol);
+      if (!base || !base.close || !today.close) return;
+      tot += ((today.close - base.close) / base.close) * (s.weight/100);
+    });
+    return tot;
+  })() : null;
+
+  // Alpha
+  const alpha = (fundChgNav !== null && niftyChg !== null) ? fundChgNav - niftyChg : null;
+  const toolAlpha = (toolChg !== null && niftyChg !== null) ? toolChg - niftyChg : null;
+
+  const fmt = v => v !== null ? (v>=0?'+':'')+(v*100).toFixed(2)+'%' : '—';
+  const plbl = p==='1d'?'1 Day':p==='1w'?'1 Week':'1 Month';
+
+  const cards = [
+    {
+      lbl: 'Official NAV (' + plbl + ')',
+      val: fmt(fundChgNav),
+      sub: navToday ? '₹' + navToday.toFixed(4) + ' (latest NAV)' : 'via mfapi.in',
+      cls: fundChgNav===null?'neu':fundChgNav>=0?'up':'down'
+    },
+    {
+      lbl: 'Nifty 50 (' + plbl + ')',
+      val: fmt(niftyChg),
+      sub: niftyToday ? 'UTI Nifty 50 Index Fund' : 'via mfapi.in',
+      cls: niftyChg===null?'neu':niftyChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Our Equity Calc (' + plbl + ')',
+      val: fmt(toolChg),
+      sub: 'From matched portfolio stocks',
+      cls: toolChg===null?'neu':toolChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Fund Alpha vs Nifty',
+      val: fmt(alpha),
+      sub: 'Official NAV minus Nifty',
+      cls: alpha===null?'neu':alpha>=0?'alpha-pos':'alpha-neg'
+    },
+    {
+      lbl: 'Equity Alpha vs Nifty',
+      val: fmt(toolAlpha),
+      sub: 'Equity portion minus Nifty',
+      cls: toolAlpha===null?'neu':toolAlpha>=0?'alpha-pos':'alpha-neg'
+    },
+  ];
+
+  grid.innerHTML = cards.map(c =>
+    `<div class="bmark-card ${c.cls}">
+      <div class="bc-lbl">${c.lbl}</div>
+      <div class="bc-val">${c.val}</div>
+      <div class="bc-sub">${c.sub}</div>
+    </div>`
+  ).join('');
+  grid.style.display = 'grid';
+}
+
+// Show benchmark panel after analysis runs
+const _origRender = render;
+function render() {
+  _origRender();
+  document.getElementById('bmarkPanel').style.display = 'block';
+  if (bmarkData.fund) renderBmark();
+}
+
+</script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js">
+// ── Benchmark & NAV Comparison ────────────────────────────────────────────
+const NIFTY_SCHEME = 120716;  // UTI Nifty 50 Index Fund Regular Growth
+let bmarkData = {fund: null, nifty: null, period: '1d', schemeCode: null, schemeName: ''};
+
+async function mfapiFetch(code) {
+  const url = `https://api.mfapi.in/mf/${code}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(8000)});
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+async function mfapiSearch(q) {
+  const url = `https://api.mfapi.in/mf/search?q=${encodeURIComponent(q)}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(5000)});
+  if (!r.ok) return [];
+  return r.json();
+}
+
+async function bmarkSearch(q) {
+  const res = document.getElementById('bmarkResults');
+  if (!q || q.length < 3) { res.style.display='none'; return; }
+  // If it looks like a number, don't search
+  if (/^\d+$/.test(q.trim())) { res.style.display='none'; return; }
+  try {
+    const results = await mfapiSearch(q);
+    if (!results.length) { res.style.display='none'; return; }
+    res.innerHTML = results.slice(0,8).map(f =>
+      `<div class="bmark-item" onclick="bmarkSelect(${f.schemeCode}, '${f.schemeName.replace(/'/g,"\'")}')">
+        ${f.schemeName}<br><span class="bmark-code">Code: ${f.schemeCode}</span>
+      </div>`
+    ).join('');
+    res.style.display = 'block';
+  } catch(e) { res.style.display='none'; }
+}
+
+async function bmarkSelect(code, name) {
+  document.getElementById('bmarkInput').value = name;
+  document.getElementById('bmarkResults').style.display = 'none';
+  bmarkData.schemeCode = code;
+  bmarkData.schemeName = name;
+  await loadBmarkData();
+}
+
+async function bmarkFetchByCode(val) {
+  document.getElementById('bmarkResults').style.display = 'none';
+  const code = parseInt(val.trim());
+  if (isNaN(code)) {
+    // Try search
+    const results = await mfapiSearch(val);
+    if (results && results.length > 0) {
+      await bmarkSelect(results[0].schemeCode, results[0].schemeName);
+    }
+    return;
+  }
+  bmarkData.schemeCode = code;
+  try {
+    const d = await mfapiFetch(code);
+    bmarkData.schemeName = d.meta?.scheme_name || 'Fund ' + code;
+    document.getElementById('bmarkInput').value = bmarkData.schemeName;
+  } catch(e) {}
+  await loadBmarkData();
+}
+
+async function loadBmarkData() {
+  const st = document.getElementById('bmarkStatus');
+  const grid = document.getElementById('bmarkGrid');
+  st.textContent = 'Loading NAV data…';
+  st.style.display = 'block';
+  grid.style.display = 'none';
+
+  try {
+    // Fetch fund NAV and Nifty NAV in parallel
+    const [fundData, niftyData] = await Promise.all([
+      mfapiFetch(bmarkData.schemeCode),
+      mfapiFetch(NIFTY_SCHEME)
+    ]);
+
+    bmarkData.fund = fundData.data;   // [{date, nav}, ...]
+    bmarkData.nifty = niftyData.data;
+    bmarkData.schemeName = fundData.meta?.scheme_name || bmarkData.schemeName;
+
+    const fn = document.getElementById('bmarkFundName');
+    fn.textContent = bmarkData.schemeName;
+    fn.style.display = 'block';
+
+    st.style.display = 'none';
+    renderBmark();
+    document.getElementById('bmarkPanel').style.display = 'block';
+  } catch(e) {
+    st.textContent = 'Could not load NAV data: ' + e.message;
+  }
+}
+
+function navOnDate(navArr, targetDateStr) {
+  // navArr is sorted newest first: [{date: "28-May-2026", nav: "70.21"}, ...]
+  // Find entry on or just before targetDateStr
+  // targetDateStr format: "YYYY-MM-DD"
+  const target = new Date(targetDateStr);
+  for (const entry of navArr) {
+    const parts = entry.date.split('-');
+    const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+    const d = new Date(parseInt(parts[2]), months[parts[1]], parseInt(parts[0]));
+    if (d <= target) return parseFloat(entry.nav);
+  }
+  return null;
+}
+
+function setBmarkPeriod(p, btn) {
+  bmarkData.period = p;
+  document.querySelectorAll('.bmark-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (bmarkData.fund) renderBmark();
+}
+
+function renderBmark() {
+  const grid = document.getElementById('bmarkGrid');
+  const p = bmarkData.period;
+
+  // Get dates from our price data
+  const todayStr = db_dates.today || '';
+  const weekStr  = db_dates.week  || '';
+  const monthStr = db_dates.month || '';
+  const baseStr  = p==='1d' ? todayStr : p==='1w' ? weekStr : monthStr;
+
+  // Fund NAV change
+  const navToday = bmarkData.fund ? bmarkData.fund[0] ? parseFloat(bmarkData.fund[0].nav) : null : null;
+  const navBase  = bmarkData.fund ? navOnDate(bmarkData.fund, baseStr) : null;
+  // For 1D, prev close = second entry OR use prevClose field
+  const navPrev1d = bmarkData.fund && bmarkData.fund[1] ? parseFloat(bmarkData.fund[1].nav) : null;
+
+  let fundChgNav = null;
+  if (p === '1d' && navToday && navPrev1d) {
+    fundChgNav = (navToday - navPrev1d) / navPrev1d;
+  } else if (navToday && navBase && p !== '1d') {
+    fundChgNav = (navToday - navBase) / navBase;
+  }
+
+  // Nifty NAV change
+  const niftyToday = bmarkData.nifty ? parseFloat(bmarkData.nifty[0]?.nav) : null;
+  const niftyPrev1d = bmarkData.nifty ? parseFloat(bmarkData.nifty[1]?.nav) : null;
+  const niftyBase = bmarkData.nifty ? navOnDate(bmarkData.nifty, baseStr) : null;
+
+  let niftyChg = null;
+  if (p === '1d' && niftyToday && niftyPrev1d) {
+    niftyChg = (niftyToday - niftyPrev1d) / niftyPrev1d;
+  } else if (niftyToday && niftyBase && p !== '1d') {
+    niftyChg = (niftyToday - niftyBase) / niftyBase;
+  }
+
+  // Our tool's equity calculation
+  const toolChg = portfolio.length ? (() => {
+    let tot = 0;
+    portfolio.forEach(s => {
+      const today = lookupBhav(bhavToday, s.symbol);
+      if (!today) return;
+      const base = p==='1d' ? {close: today.prevClose} : p==='1w' ? lookupBhav(bhavWeek,s.symbol) : lookupBhav(bhavMonth,s.symbol);
+      if (!base || !base.close || !today.close) return;
+      tot += ((today.close - base.close) / base.close) * (s.weight/100);
+    });
+    return tot;
+  })() : null;
+
+  // Alpha
+  const alpha = (fundChgNav !== null && niftyChg !== null) ? fundChgNav - niftyChg : null;
+  const toolAlpha = (toolChg !== null && niftyChg !== null) ? toolChg - niftyChg : null;
+
+  const fmt = v => v !== null ? (v>=0?'+':'')+(v*100).toFixed(2)+'%' : '—';
+  const plbl = p==='1d'?'1 Day':p==='1w'?'1 Week':'1 Month';
+
+  const cards = [
+    {
+      lbl: 'Official NAV (' + plbl + ')',
+      val: fmt(fundChgNav),
+      sub: navToday ? '₹' + navToday.toFixed(4) + ' (latest NAV)' : 'via mfapi.in',
+      cls: fundChgNav===null?'neu':fundChgNav>=0?'up':'down'
+    },
+    {
+      lbl: 'Nifty 50 (' + plbl + ')',
+      val: fmt(niftyChg),
+      sub: niftyToday ? 'UTI Nifty 50 Index Fund' : 'via mfapi.in',
+      cls: niftyChg===null?'neu':niftyChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Our Equity Calc (' + plbl + ')',
+      val: fmt(toolChg),
+      sub: 'From matched portfolio stocks',
+      cls: toolChg===null?'neu':toolChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Fund Alpha vs Nifty',
+      val: fmt(alpha),
+      sub: 'Official NAV minus Nifty',
+      cls: alpha===null?'neu':alpha>=0?'alpha-pos':'alpha-neg'
+    },
+    {
+      lbl: 'Equity Alpha vs Nifty',
+      val: fmt(toolAlpha),
+      sub: 'Equity portion minus Nifty',
+      cls: toolAlpha===null?'neu':toolAlpha>=0?'alpha-pos':'alpha-neg'
+    },
+  ];
+
+  grid.innerHTML = cards.map(c =>
+    `<div class="bmark-card ${c.cls}">
+      <div class="bc-lbl">${c.lbl}</div>
+      <div class="bc-val">${c.val}</div>
+      <div class="bc-sub">${c.sub}</div>
+    </div>`
+  ).join('');
+  grid.style.display = 'grid';
+}
+
+// Show benchmark panel after analysis runs
+const _origRender = render;
+function render() {
+  _origRender();
+  document.getElementById('bmarkPanel').style.display = 'block';
+  if (bmarkData.fund) renderBmark();
+}
+
+</script>
 <style>
 :root{
   --bg:#f7f6f2;--surface:#fff;--surface2:#f0efe9;
@@ -136,6 +1241,32 @@ body{background:var(--bg);color:var(--text);font-family:Georgia,serif;min-height
 .bdg{display:inline-block;padding:1px 7px;border-radius:20px;font-size:10px;font-weight:500}
 .bdg.up{background:var(--gbg);color:var(--gt)}.bdg.down{background:var(--rbg);color:var(--rt)}.bdg.w{background:var(--surface2);color:var(--t3)}
 footer{text-align:center;font-size:11px;color:var(--t3);margin-top:2rem;font-family:sans-serif;padding-bottom:1rem}
+
+/* Benchmark panel */
+.bmark-panel{background:var(--surface);border:.5px solid var(--border);border-radius:var(--rl);padding:1.25rem;margin-bottom:1.5rem}
+.bmark-panel h3{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:var(--t3);margin-bottom:1rem;font-family:sans-serif}
+.bmark-search{display:flex;gap:8px;margin-bottom:1rem;flex-wrap:wrap}
+.bmark-search input{flex:1;min-width:180px;padding:.45rem .75rem;border-radius:var(--r);border:.5px solid var(--bm);background:var(--surface);color:var(--text);font-size:13px;font-family:sans-serif}
+.bmark-search input:focus{outline:none;border-color:var(--acc)}
+.bmark-search button{padding:.45rem 1rem;background:var(--acc);color:#fff;border:none;border-radius:var(--r);font-size:13px;font-family:sans-serif;cursor:pointer;white-space:nowrap}
+.bmark-search button:hover{opacity:.85}
+.bmark-results{background:var(--surface2);border-radius:var(--r);max-height:180px;overflow-y:auto;display:none;margin-bottom:.75rem;border:.5px solid var(--border)}
+.bmark-results .bmark-item{padding:.5rem .85rem;font-size:12px;font-family:sans-serif;cursor:pointer;border-top:.5px solid var(--border)}
+.bmark-results .bmark-item:first-child{border-top:none}
+.bmark-results .bmark-item:hover{background:var(--surface)}
+.bmark-results .bmark-item .bmark-code{color:var(--t3);font-size:10px;font-family:monospace}
+.bmark-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(200px,1fr));gap:10px}
+.bmark-card{background:var(--surface2);border-radius:var(--r);padding:.85rem;font-family:sans-serif}
+.bmark-card .bc-lbl{font-size:10px;text-transform:uppercase;letter-spacing:.07em;color:var(--t3);margin-bottom:.4rem}
+.bmark-card .bc-val{font-size:1.25rem;font-weight:400;font-family:Georgia,serif;letter-spacing:-.02em}
+.bmark-card .bc-sub{font-size:11px;color:var(--t2);margin-top:.2rem}
+.bmark-card.up .bc-val{color:var(--green)}.bmark-card.down .bc-val{color:var(--red)}.bmark-card.neu .bc-val{color:var(--text)}
+.bmark-card.alpha-pos .bc-val{color:var(--green)}.bmark-card.alpha-neg .bc-val{color:var(--red)}
+.bmark-period-tabs{display:flex;gap:4px;margin-bottom:.85rem}
+.bmark-ptab{padding:.25rem .65rem;border-radius:20px;border:.5px solid var(--bm);background:var(--surface);font-size:11px;font-family:sans-serif;color:var(--t2);cursor:pointer}
+.bmark-ptab.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+.bmark-status{font-size:12px;color:var(--t3);font-family:sans-serif;font-style:italic}
+.bmark-fund-name{font-size:13px;color:var(--text);font-family:sans-serif;font-weight:500;margin-bottom:.75rem;display:none}
 </style>
 </head>
 <body>
@@ -226,6 +1357,35 @@ footer{text-align:center;font-size:11px;color:var(--t3);margin-top:2rem;font-fam
 </div>
 
 <!-- Results -->
+
+<!-- Benchmark & NAV Comparison Panel -->
+<div id="bmarkPanel" style="display:none">
+  <div class="bmark-panel">
+    <h3><i class="ti ti-chart-line" style="font-size:12px;margin-right:4px"></i>Benchmark & NAV Comparison</h3>
+    
+    <!-- Fund search -->
+    <div class="bmark-search">
+      <input type="text" id="bmarkInput" placeholder="Search fund name or enter MFAPI scheme code…" 
+        oninput="bmarkSearch(this.value)" onkeydown="if(event.key==='Enter')bmarkFetchByCode(this.value)">
+      <button onclick="bmarkFetchByCode(document.getElementById('bmarkInput').value)">Compare</button>
+    </div>
+    <div class="bmark-results" id="bmarkResults"></div>
+    <div class="bmark-fund-name" id="bmarkFundName"></div>
+
+    <!-- Period tabs -->
+    <div class="bmark-period-tabs">
+      <button class="bmark-ptab active" data-bp="1d" onclick="setBmarkPeriod('1d',this)">1 Day</button>
+      <button class="bmark-ptab" data-bp="1w" onclick="setBmarkPeriod('1w',this)">1 Week</button>
+      <button class="bmark-ptab" data-bp="1m" onclick="setBmarkPeriod('1m',this)">1 Month</button>
+    </div>
+
+    <div class="bmark-status" id="bmarkStatus">Search for your fund above to compare official NAV vs our calculation vs Nifty 50.</div>
+
+    <!-- Comparison cards -->
+    <div class="bmark-grid" id="bmarkGrid" style="display:none"></div>
+  </div>
+</div>
+
 <div id="results">
   <div class="chips" id="chips"></div>
   <div class="metrics" id="metrics"></div>
@@ -300,6 +1460,7 @@ function resolveSymbol(raw) {
 
 // ── State ──────────────────────────────────────────────────────────────────
 let rawRows=[], rawHeaders=[], portfolio=[];
+let db_dates = {};
 let bhavToday={}, bhavWeek={}, bhavMonth={};
 let activePeriod='1d', apiReady=false;
 let failCount=0, pieChart, barChart;
@@ -731,6 +1892,227 @@ function render(){
 
 // ── Boot ───────────────────────────────────────────────────────────────────
 setTimeout(tryConnectAPI, 800);
+
+// ── Benchmark & NAV Comparison ────────────────────────────────────────────
+const NIFTY_SCHEME = 120716;  // UTI Nifty 50 Index Fund Regular Growth
+let bmarkData = {fund: null, nifty: null, period: '1d', schemeCode: null, schemeName: ''};
+
+async function mfapiFetch(code) {
+  const url = `https://api.mfapi.in/mf/${code}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(8000)});
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return r.json();
+}
+
+async function mfapiSearch(q) {
+  const url = `https://api.mfapi.in/mf/search?q=${encodeURIComponent(q)}`;
+  const r = await fetch(url, {signal: AbortSignal.timeout(5000)});
+  if (!r.ok) return [];
+  return r.json();
+}
+
+async function bmarkSearch(q) {
+  const res = document.getElementById('bmarkResults');
+  if (!q || q.length < 3) { res.style.display='none'; return; }
+  // If it looks like a number, don't search
+  if (/^\d+$/.test(q.trim())) { res.style.display='none'; return; }
+  try {
+    const results = await mfapiSearch(q);
+    if (!results.length) { res.style.display='none'; return; }
+    res.innerHTML = results.slice(0,8).map(f =>
+      `<div class="bmark-item" onclick="bmarkSelect(${f.schemeCode}, '${f.schemeName.replace(/'/g,"\'")}')">
+        ${f.schemeName}<br><span class="bmark-code">Code: ${f.schemeCode}</span>
+      </div>`
+    ).join('');
+    res.style.display = 'block';
+  } catch(e) { res.style.display='none'; }
+}
+
+async function bmarkSelect(code, name) {
+  document.getElementById('bmarkInput').value = name;
+  document.getElementById('bmarkResults').style.display = 'none';
+  bmarkData.schemeCode = code;
+  bmarkData.schemeName = name;
+  await loadBmarkData();
+}
+
+async function bmarkFetchByCode(val) {
+  document.getElementById('bmarkResults').style.display = 'none';
+  const code = parseInt(val.trim());
+  if (isNaN(code)) {
+    // Try search
+    const results = await mfapiSearch(val);
+    if (results && results.length > 0) {
+      await bmarkSelect(results[0].schemeCode, results[0].schemeName);
+    }
+    return;
+  }
+  bmarkData.schemeCode = code;
+  try {
+    const d = await mfapiFetch(code);
+    bmarkData.schemeName = d.meta?.scheme_name || 'Fund ' + code;
+    document.getElementById('bmarkInput').value = bmarkData.schemeName;
+  } catch(e) {}
+  await loadBmarkData();
+}
+
+async function loadBmarkData() {
+  const st = document.getElementById('bmarkStatus');
+  const grid = document.getElementById('bmarkGrid');
+  st.textContent = 'Loading NAV data…';
+  st.style.display = 'block';
+  grid.style.display = 'none';
+
+  try {
+    // Fetch fund NAV and Nifty NAV in parallel
+    const [fundData, niftyData] = await Promise.all([
+      mfapiFetch(bmarkData.schemeCode),
+      mfapiFetch(NIFTY_SCHEME)
+    ]);
+
+    bmarkData.fund = fundData.data;   // [{date, nav}, ...]
+    bmarkData.nifty = niftyData.data;
+    bmarkData.schemeName = fundData.meta?.scheme_name || bmarkData.schemeName;
+
+    const fn = document.getElementById('bmarkFundName');
+    fn.textContent = bmarkData.schemeName;
+    fn.style.display = 'block';
+
+    st.style.display = 'none';
+    renderBmark();
+    document.getElementById('bmarkPanel').style.display = 'block';
+  } catch(e) {
+    st.textContent = 'Could not load NAV data: ' + e.message;
+  }
+}
+
+function navOnDate(navArr, targetDateStr) {
+  // navArr is sorted newest first: [{date: "28-May-2026", nav: "70.21"}, ...]
+  // Find entry on or just before targetDateStr
+  // targetDateStr format: "YYYY-MM-DD"
+  const target = new Date(targetDateStr);
+  for (const entry of navArr) {
+    const parts = entry.date.split('-');
+    const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+    const d = new Date(parseInt(parts[2]), months[parts[1]], parseInt(parts[0]));
+    if (d <= target) return parseFloat(entry.nav);
+  }
+  return null;
+}
+
+function setBmarkPeriod(p, btn) {
+  bmarkData.period = p;
+  document.querySelectorAll('.bmark-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  if (bmarkData.fund) renderBmark();
+}
+
+function renderBmark() {
+  const grid = document.getElementById('bmarkGrid');
+  const p = bmarkData.period;
+
+  // Get dates from our price data
+  const todayStr = db_dates.today || '';
+  const weekStr  = db_dates.week  || '';
+  const monthStr = db_dates.month || '';
+  const baseStr  = p==='1d' ? todayStr : p==='1w' ? weekStr : monthStr;
+
+  // Fund NAV change
+  const navToday = bmarkData.fund ? bmarkData.fund[0] ? parseFloat(bmarkData.fund[0].nav) : null : null;
+  const navBase  = bmarkData.fund ? navOnDate(bmarkData.fund, baseStr) : null;
+  // For 1D, prev close = second entry OR use prevClose field
+  const navPrev1d = bmarkData.fund && bmarkData.fund[1] ? parseFloat(bmarkData.fund[1].nav) : null;
+
+  let fundChgNav = null;
+  if (p === '1d' && navToday && navPrev1d) {
+    fundChgNav = (navToday - navPrev1d) / navPrev1d;
+  } else if (navToday && navBase && p !== '1d') {
+    fundChgNav = (navToday - navBase) / navBase;
+  }
+
+  // Nifty NAV change
+  const niftyToday = bmarkData.nifty ? parseFloat(bmarkData.nifty[0]?.nav) : null;
+  const niftyPrev1d = bmarkData.nifty ? parseFloat(bmarkData.nifty[1]?.nav) : null;
+  const niftyBase = bmarkData.nifty ? navOnDate(bmarkData.nifty, baseStr) : null;
+
+  let niftyChg = null;
+  if (p === '1d' && niftyToday && niftyPrev1d) {
+    niftyChg = (niftyToday - niftyPrev1d) / niftyPrev1d;
+  } else if (niftyToday && niftyBase && p !== '1d') {
+    niftyChg = (niftyToday - niftyBase) / niftyBase;
+  }
+
+  // Our tool's equity calculation
+  const toolChg = portfolio.length ? (() => {
+    let tot = 0;
+    portfolio.forEach(s => {
+      const today = lookupBhav(bhavToday, s.symbol);
+      if (!today) return;
+      const base = p==='1d' ? {close: today.prevClose} : p==='1w' ? lookupBhav(bhavWeek,s.symbol) : lookupBhav(bhavMonth,s.symbol);
+      if (!base || !base.close || !today.close) return;
+      tot += ((today.close - base.close) / base.close) * (s.weight/100);
+    });
+    return tot;
+  })() : null;
+
+  // Alpha
+  const alpha = (fundChgNav !== null && niftyChg !== null) ? fundChgNav - niftyChg : null;
+  const toolAlpha = (toolChg !== null && niftyChg !== null) ? toolChg - niftyChg : null;
+
+  const fmt = v => v !== null ? (v>=0?'+':'')+(v*100).toFixed(2)+'%' : '—';
+  const plbl = p==='1d'?'1 Day':p==='1w'?'1 Week':'1 Month';
+
+  const cards = [
+    {
+      lbl: 'Official NAV (' + plbl + ')',
+      val: fmt(fundChgNav),
+      sub: navToday ? '₹' + navToday.toFixed(4) + ' (latest NAV)' : 'via mfapi.in',
+      cls: fundChgNav===null?'neu':fundChgNav>=0?'up':'down'
+    },
+    {
+      lbl: 'Nifty 50 (' + plbl + ')',
+      val: fmt(niftyChg),
+      sub: niftyToday ? 'UTI Nifty 50 Index Fund' : 'via mfapi.in',
+      cls: niftyChg===null?'neu':niftyChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Our Equity Calc (' + plbl + ')',
+      val: fmt(toolChg),
+      sub: 'From matched portfolio stocks',
+      cls: toolChg===null?'neu':toolChg>=0?'up':'down'
+    },
+    {
+      lbl: 'Fund Alpha vs Nifty',
+      val: fmt(alpha),
+      sub: 'Official NAV minus Nifty',
+      cls: alpha===null?'neu':alpha>=0?'alpha-pos':'alpha-neg'
+    },
+    {
+      lbl: 'Equity Alpha vs Nifty',
+      val: fmt(toolAlpha),
+      sub: 'Equity portion minus Nifty',
+      cls: toolAlpha===null?'neu':toolAlpha>=0?'alpha-pos':'alpha-neg'
+    },
+  ];
+
+  grid.innerHTML = cards.map(c =>
+    `<div class="bmark-card ${c.cls}">
+      <div class="bc-lbl">${c.lbl}</div>
+      <div class="bc-val">${c.val}</div>
+      <div class="bc-sub">${c.sub}</div>
+    </div>`
+  ).join('');
+  grid.style.display = 'grid';
+}
+
+// Show benchmark panel after analysis runs
+const _origRender = render;
+function render() {
+  _origRender();
+  document.getElementById('bmarkPanel').style.display = 'block';
+  if (bmarkData.fund) renderBmark();
+}
+
 </script>
 </body>
 </html>
