@@ -66,12 +66,14 @@ async function navLoad() {
 
 function navGetOnDate(dateStr) {
   // dateStr: "YYYY-MM-DD", navData sorted newest first
+  // mfapi date format: "27-05-2026" (DD-MM-YYYY)
   if (!navData || !dateStr) return null;
-  const target = new Date(dateStr);
-  const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+  const [ty, tm, td] = dateStr.split('-').map(Number);
+  const target = new Date(ty, tm-1, td);
   for (const e of navData) {
     const p = e.date.split('-');
-    const d = new Date(parseInt(p[2]), months[p[1]], parseInt(p[0]));
+    // p = ["27","05","2026"]
+    const d = new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
     if (d <= target) return parseFloat(e.nav);
   }
   return null;
@@ -131,7 +133,8 @@ function renderNavCards() {
         <div class="nav-card neu" style="margin-bottom:8px">
           <div class="nc-lbl">Latest NAV</div>
           <div class="nc-val">₹${latest.toFixed(4)}</div>
-          <div class="nc-sub">${navData[0].date}</div>
+          <div class="nc-sub">${navData[0].date}${navData[0].date.includes('2021')||navData[0].date.includes('2020')?
+            ' <span style="color:var(--red);font-size:9px">⚠ Stale — try a different scheme code</span>':''}</div>
         </div>
         <div class="nav-card ${cls(off1d)}" style="margin-bottom:8px">
           <div class="nc-lbl">1 Day</div>
@@ -242,12 +245,14 @@ async function navLoad() {
 
 function navGetOnDate(dateStr) {
   // dateStr: "YYYY-MM-DD", navData sorted newest first
+  // mfapi date format: "27-05-2026" (DD-MM-YYYY)
   if (!navData || !dateStr) return null;
-  const target = new Date(dateStr);
-  const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+  const [ty, tm, td] = dateStr.split('-').map(Number);
+  const target = new Date(ty, tm-1, td);
   for (const e of navData) {
     const p = e.date.split('-');
-    const d = new Date(parseInt(p[2]), months[p[1]], parseInt(p[0]));
+    // p = ["27","05","2026"]
+    const d = new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
     if (d <= target) return parseFloat(e.nav);
   }
   return null;
@@ -307,7 +312,8 @@ function renderNavCards() {
         <div class="nav-card neu" style="margin-bottom:8px">
           <div class="nc-lbl">Latest NAV</div>
           <div class="nc-val">₹${latest.toFixed(4)}</div>
-          <div class="nc-sub">${navData[0].date}</div>
+          <div class="nc-sub">${navData[0].date}${navData[0].date.includes('2021')||navData[0].date.includes('2020')?
+            ' <span style="color:var(--red);font-size:9px">⚠ Stale — try a different scheme code</span>':''}</div>
         </div>
         <div class="nav-card ${cls(off1d)}" style="margin-bottom:8px">
           <div class="nc-lbl">1 Day</div>
@@ -418,12 +424,14 @@ async function navLoad() {
 
 function navGetOnDate(dateStr) {
   // dateStr: "YYYY-MM-DD", navData sorted newest first
+  // mfapi date format: "27-05-2026" (DD-MM-YYYY)
   if (!navData || !dateStr) return null;
-  const target = new Date(dateStr);
-  const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+  const [ty, tm, td] = dateStr.split('-').map(Number);
+  const target = new Date(ty, tm-1, td);
   for (const e of navData) {
     const p = e.date.split('-');
-    const d = new Date(parseInt(p[2]), months[p[1]], parseInt(p[0]));
+    // p = ["27","05","2026"]
+    const d = new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
     if (d <= target) return parseFloat(e.nav);
   }
   return null;
@@ -483,7 +491,8 @@ function renderNavCards() {
         <div class="nav-card neu" style="margin-bottom:8px">
           <div class="nc-lbl">Latest NAV</div>
           <div class="nc-val">₹${latest.toFixed(4)}</div>
-          <div class="nc-sub">${navData[0].date}</div>
+          <div class="nc-sub">${navData[0].date}${navData[0].date.includes('2021')||navData[0].date.includes('2020')?
+            ' <span style="color:var(--red);font-size:9px">⚠ Stale — try a different scheme code</span>':''}</div>
         </div>
         <div class="nav-card ${cls(off1d)}" style="margin-bottom:8px">
           <div class="nc-lbl">1 Day</div>
@@ -594,12 +603,14 @@ async function navLoad() {
 
 function navGetOnDate(dateStr) {
   // dateStr: "YYYY-MM-DD", navData sorted newest first
+  // mfapi date format: "27-05-2026" (DD-MM-YYYY)
   if (!navData || !dateStr) return null;
-  const target = new Date(dateStr);
-  const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+  const [ty, tm, td] = dateStr.split('-').map(Number);
+  const target = new Date(ty, tm-1, td);
   for (const e of navData) {
     const p = e.date.split('-');
-    const d = new Date(parseInt(p[2]), months[p[1]], parseInt(p[0]));
+    // p = ["27","05","2026"]
+    const d = new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
     if (d <= target) return parseFloat(e.nav);
   }
   return null;
@@ -659,7 +670,8 @@ function renderNavCards() {
         <div class="nav-card neu" style="margin-bottom:8px">
           <div class="nc-lbl">Latest NAV</div>
           <div class="nc-val">₹${latest.toFixed(4)}</div>
-          <div class="nc-sub">${navData[0].date}</div>
+          <div class="nc-sub">${navData[0].date}${navData[0].date.includes('2021')||navData[0].date.includes('2020')?
+            ' <span style="color:var(--red);font-size:9px">⚠ Stale — try a different scheme code</span>':''}</div>
         </div>
         <div class="nav-card ${cls(off1d)}" style="margin-bottom:8px">
           <div class="nc-lbl">1 Day</div>
@@ -770,12 +782,14 @@ async function navLoad() {
 
 function navGetOnDate(dateStr) {
   // dateStr: "YYYY-MM-DD", navData sorted newest first
+  // mfapi date format: "27-05-2026" (DD-MM-YYYY)
   if (!navData || !dateStr) return null;
-  const target = new Date(dateStr);
-  const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+  const [ty, tm, td] = dateStr.split('-').map(Number);
+  const target = new Date(ty, tm-1, td);
   for (const e of navData) {
     const p = e.date.split('-');
-    const d = new Date(parseInt(p[2]), months[p[1]], parseInt(p[0]));
+    // p = ["27","05","2026"]
+    const d = new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
     if (d <= target) return parseFloat(e.nav);
   }
   return null;
@@ -835,7 +849,8 @@ function renderNavCards() {
         <div class="nav-card neu" style="margin-bottom:8px">
           <div class="nc-lbl">Latest NAV</div>
           <div class="nc-val">₹${latest.toFixed(4)}</div>
-          <div class="nc-sub">${navData[0].date}</div>
+          <div class="nc-sub">${navData[0].date}${navData[0].date.includes('2021')||navData[0].date.includes('2020')?
+            ' <span style="color:var(--red);font-size:9px">⚠ Stale — try a different scheme code</span>':''}</div>
         </div>
         <div class="nav-card ${cls(off1d)}" style="margin-bottom:8px">
           <div class="nc-lbl">1 Day</div>
@@ -1148,11 +1163,18 @@ footer{text-align:center;font-size:11px;color:var(--t3);margin-top:2rem;font-fam
   <div class="nav-compare" id="navCompare" style="display:none">
     <h3><i class="ti ti-chart-line" style="font-size:11px;margin-right:4px"></i>Official NAV — mfapi.in</h3>
     <div class="nav-input-row">
-      <input type="text" id="navInput" placeholder="Search fund name or enter scheme code…"
+      <input type="text" id="navInput" placeholder="Search fund name or enter AMFI scheme code…"
         oninput="navSearch(this.value)">
       <button onclick="navLoad()">Fetch NAV</button>
     </div>
     <div class="nav-search-results" id="navSearchResults"></div>
+    <div style="font-size:11px;color:var(--t3);font-family:sans-serif;margin-bottom:.6rem">
+      Tip: Find your fund's scheme code at 
+      <a href="https://www.amfiindia.com/nav-history-download.aspx" target="_blank" style="color:var(--acc)">amfiindia.com</a> 
+      or search on 
+      <a href="https://api.mfapi.in/mf" target="_blank" style="color:var(--acc)">api.mfapi.in/mf</a>
+      &nbsp;·&nbsp; For merged funds, use the current active scheme code.
+    </div>
     <div class="nav-scheme-name" id="navSchemeName"></div>
     <div class="nav-cards" id="navCards"></div>
   </div>
@@ -1722,12 +1744,14 @@ async function navLoad() {
 
 function navGetOnDate(dateStr) {
   // dateStr: "YYYY-MM-DD", navData sorted newest first
+  // mfapi date format: "27-05-2026" (DD-MM-YYYY)
   if (!navData || !dateStr) return null;
-  const target = new Date(dateStr);
-  const months = {Jan:0,Feb:1,Mar:2,Apr:3,May:4,Jun:5,Jun:5,Jul:6,Aug:7,Sep:8,Oct:9,Nov:10,Dec:11};
+  const [ty, tm, td] = dateStr.split('-').map(Number);
+  const target = new Date(ty, tm-1, td);
   for (const e of navData) {
     const p = e.date.split('-');
-    const d = new Date(parseInt(p[2]), months[p[1]], parseInt(p[0]));
+    // p = ["27","05","2026"]
+    const d = new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
     if (d <= target) return parseFloat(e.nav);
   }
   return null;
@@ -1787,7 +1811,8 @@ function renderNavCards() {
         <div class="nav-card neu" style="margin-bottom:8px">
           <div class="nc-lbl">Latest NAV</div>
           <div class="nc-val">₹${latest.toFixed(4)}</div>
-          <div class="nc-sub">${navData[0].date}</div>
+          <div class="nc-sub">${navData[0].date}${navData[0].date.includes('2021')||navData[0].date.includes('2020')?
+            ' <span style="color:var(--red);font-size:9px">⚠ Stale — try a different scheme code</span>':''}</div>
         </div>
         <div class="nav-card ${cls(off1d)}" style="margin-bottom:8px">
           <div class="nc-lbl">1 Day</div>
