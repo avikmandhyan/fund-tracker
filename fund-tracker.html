@@ -218,13 +218,7 @@ function renderBmark() {
   grid.style.display = 'grid';
 }
 
-// Show benchmark panel after analysis runs
-const _origRender = render;
-function render() {
-  _origRender();
-  document.getElementById('bmarkPanel').style.display = 'block';
-  if (bmarkData.fund) renderBmark();
-}
+// Show benchmark panel after analysis runs — called from runAnalysis directly
 
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.4.1/papaparse.min.js">
@@ -440,13 +434,7 @@ function renderBmark() {
   grid.style.display = 'grid';
 }
 
-// Show benchmark panel after analysis runs
-const _origRender = render;
-function render() {
-  _origRender();
-  document.getElementById('bmarkPanel').style.display = 'block';
-  if (bmarkData.fund) renderBmark();
-}
+// Show benchmark panel after analysis runs — called from runAnalysis directly
 
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js">
@@ -662,13 +650,7 @@ function renderBmark() {
   grid.style.display = 'grid';
 }
 
-// Show benchmark panel after analysis runs
-const _origRender = render;
-function render() {
-  _origRender();
-  document.getElementById('bmarkPanel').style.display = 'block';
-  if (bmarkData.fund) renderBmark();
-}
+// Show benchmark panel after analysis runs — called from runAnalysis directly
 
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js">
@@ -884,13 +866,7 @@ function renderBmark() {
   grid.style.display = 'grid';
 }
 
-// Show benchmark panel after analysis runs
-const _origRender = render;
-function render() {
-  _origRender();
-  document.getElementById('bmarkPanel').style.display = 'block';
-  if (bmarkData.fund) renderBmark();
-}
+// Show benchmark panel after analysis runs — called from runAnalysis directly
 
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js">
@@ -1106,13 +1082,7 @@ function renderBmark() {
   grid.style.display = 'grid';
 }
 
-// Show benchmark panel after analysis runs
-const _origRender = render;
-function render() {
-  _origRender();
-  document.getElementById('bmarkPanel').style.display = 'block';
-  if (bmarkData.fund) renderBmark();
-}
+// Show benchmark panel after analysis runs — called from runAnalysis directly
 
 </script>
 <style>
@@ -1779,6 +1749,9 @@ async function runAnalysis(){
   render();
   document.getElementById('results').classList.add('show');
   document.getElementById('results').scrollIntoView({behavior:'smooth',block:'start'});
+  // Show benchmark panel and refresh if data loaded
+  document.getElementById('bmarkPanel').style.display = 'block';
+  if (bmarkData && bmarkData.fund) renderBmark();
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────
@@ -2105,13 +2078,7 @@ function renderBmark() {
   grid.style.display = 'grid';
 }
 
-// Show benchmark panel after analysis runs
-const _origRender = render;
-function render() {
-  _origRender();
-  document.getElementById('bmarkPanel').style.display = 'block';
-  if (bmarkData.fund) renderBmark();
-}
+// Show benchmark panel after analysis runs — called from runAnalysis directly
 
 </script>
 </body>
