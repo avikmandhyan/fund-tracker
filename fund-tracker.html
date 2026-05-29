@@ -123,6 +123,8 @@ function renderNavCards() {
   const fmt = v => v !== null ? (v>=0?'+':'')+(v*100).toFixed(2)+'%' : '—';
   const cls = v => v===null?'neu':v>=0?'up':'down';
 
+  document.getElementById('perfChartSec').style.display = 'block';
+  renderPerfChart();
   document.getElementById('navCards').innerHTML = `
     <div style="grid-column:1/-1;display:grid;grid-template-columns:1fr 1fr;gap:10px">
       <!-- Official NAV column -->
@@ -181,6 +183,164 @@ function renderNavCards() {
     </div>
   `;
   document.getElementById('navCompare').style.display = 'block';
+}
+
+
+// ── Nifty vs Fund Performance Chart ───────────────────────────────────────
+const NIFTY_SCHEME_CODE = 120716; // UTI Nifty 50 Index Fund Regular Growth
+let niftyNavData = null;
+let perfChart = null;
+let perfDays = 30;
+
+async function loadNiftyData() {
+  if (niftyNavData) return; // already loaded
+  try {
+    const r = await fetch('https://api.mfapi.in/mf/' + NIFTY_SCHEME_CODE, 
+      {signal: AbortSignal.timeout(8000)});
+    const d = await r.json();
+    niftyNavData = d.data; // [{date, nav}, ...] newest first
+  } catch(e) {}
+}
+
+function parseMfDate(dateStr) {
+  // "27-05-2026" → Date
+  const p = dateStr.split('-');
+  return new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
+}
+
+function indexedSeries(navArr, days) {
+  // Filter to last N days, then index to 100 at start
+  if (!navArr || !navArr.length) return [];
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  
+  // Filter and reverse to get chronological order
+  const filtered = navArr
+    .filter(e => parseMfDate(e.date) >= cutoff)
+    .reverse(); // oldest first
+  
+  if (!filtered.length) return [];
+  const base = parseFloat(filtered[0].nav);
+  return filtered.map(e => ({
+    x: parseMfDate(e.date),
+    y: parseFloat(((parseFloat(e.nav) / base - 1) * 100).toFixed(3))
+  }));
+}
+
+function setPerfPeriod(days, btn) {
+  perfDays = days;
+  document.querySelectorAll('.perf-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderPerfChart();
+}
+
+async function renderPerfChart() {
+  const sec = document.getElementById('perfChartSec');
+  const wrap = document.getElementById('perfChartWrap');
+  const status = document.getElementById('perfStatus');
+
+  if (!navData) {
+    status.textContent = 'Load NAV data above to see the chart.';
+    status.style.display = 'block';
+    wrap.style.display = 'none';
+    return;
+  }
+
+  sec.style.display = 'block';
+  status.textContent = 'Loading Nifty 50 data…';
+  status.style.display = 'block';
+  wrap.style.display = 'none';
+
+  await loadNiftyData();
+
+  const fundSeries  = indexedSeries(navData, perfDays);
+  const niftySeries = indexedSeries(niftyNavData, perfDays);
+
+  if (!fundSeries.length) {
+    status.textContent = 'Not enough NAV history for this period.';
+    return;
+  }
+
+  status.style.display = 'none';
+  wrap.style.display = 'block';
+
+  // Fund name (short)
+  const fundLabel = (document.getElementById('navSchemeName')?.textContent || 'Fund')
+    .replace(/regular plan.*|direct plan.*/i, '').trim().slice(0, 35);
+
+  // Legend
+  document.getElementById('perfLegend').innerHTML = [
+    {color:'#3C3489', label: fundLabel},
+    {color:'#E24B4A', label: 'Nifty 50 (UTI Index Fund)'},
+  ].map(l => `<div class="perf-legend-item">
+    <div class="perf-legend-dot" style="background:${l.color}"></div>
+    <span style="color:var(--t2)">${l.label}</span>
+  </div>`).join('');
+
+  // Destroy old chart
+  if (perfChart) { perfChart.destroy(); perfChart = null; }
+
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const gridColor = isDark ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.06)';
+  const textColor = isDark ? '#6c6c66' : '#9c9c96';
+
+  perfChart = new Chart(document.getElementById('perfChart'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: fundLabel,
+          data: fundSeries,
+          borderColor: '#3C3489',
+          backgroundColor: 'rgba(60,52,137,.08)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+        {
+          label: 'Nifty 50',
+          data: niftySeries,
+          borderColor: '#E24B4A',
+          backgroundColor: 'rgba(226,75,74,.06)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ctx.dataset.label + ': ' + (ctx.raw.y >= 0 ? '+' : '') + ctx.raw.y.toFixed(2) + '%'
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: perfDays <= 30 ? 'day' : perfDays <= 90 ? 'week' : 'month' },
+          grid: { color: gridColor },
+          ticks: { color: textColor, font: { size: 11 }, maxRotation: 0 }
+        },
+        y: {
+          grid: { color: gridColor },
+          ticks: {
+            color: textColor, font: { size: 11 },
+            callback: v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%'
+          }
+        }
+      }
+    }
+  });
 }
 
 </script>
@@ -362,6 +522,164 @@ function renderNavCards() {
   document.getElementById('navCompare').style.display = 'block';
 }
 
+
+// ── Nifty vs Fund Performance Chart ───────────────────────────────────────
+const NIFTY_SCHEME_CODE = 120716; // UTI Nifty 50 Index Fund Regular Growth
+let niftyNavData = null;
+let perfChart = null;
+let perfDays = 30;
+
+async function loadNiftyData() {
+  if (niftyNavData) return; // already loaded
+  try {
+    const r = await fetch('https://api.mfapi.in/mf/' + NIFTY_SCHEME_CODE, 
+      {signal: AbortSignal.timeout(8000)});
+    const d = await r.json();
+    niftyNavData = d.data; // [{date, nav}, ...] newest first
+  } catch(e) {}
+}
+
+function parseMfDate(dateStr) {
+  // "27-05-2026" → Date
+  const p = dateStr.split('-');
+  return new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
+}
+
+function indexedSeries(navArr, days) {
+  // Filter to last N days, then index to 100 at start
+  if (!navArr || !navArr.length) return [];
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  
+  // Filter and reverse to get chronological order
+  const filtered = navArr
+    .filter(e => parseMfDate(e.date) >= cutoff)
+    .reverse(); // oldest first
+  
+  if (!filtered.length) return [];
+  const base = parseFloat(filtered[0].nav);
+  return filtered.map(e => ({
+    x: parseMfDate(e.date),
+    y: parseFloat(((parseFloat(e.nav) / base - 1) * 100).toFixed(3))
+  }));
+}
+
+function setPerfPeriod(days, btn) {
+  perfDays = days;
+  document.querySelectorAll('.perf-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderPerfChart();
+}
+
+async function renderPerfChart() {
+  const sec = document.getElementById('perfChartSec');
+  const wrap = document.getElementById('perfChartWrap');
+  const status = document.getElementById('perfStatus');
+
+  if (!navData) {
+    status.textContent = 'Load NAV data above to see the chart.';
+    status.style.display = 'block';
+    wrap.style.display = 'none';
+    return;
+  }
+
+  sec.style.display = 'block';
+  status.textContent = 'Loading Nifty 50 data…';
+  status.style.display = 'block';
+  wrap.style.display = 'none';
+
+  await loadNiftyData();
+
+  const fundSeries  = indexedSeries(navData, perfDays);
+  const niftySeries = indexedSeries(niftyNavData, perfDays);
+
+  if (!fundSeries.length) {
+    status.textContent = 'Not enough NAV history for this period.';
+    return;
+  }
+
+  status.style.display = 'none';
+  wrap.style.display = 'block';
+
+  // Fund name (short)
+  const fundLabel = (document.getElementById('navSchemeName')?.textContent || 'Fund')
+    .replace(/regular plan.*|direct plan.*/i, '').trim().slice(0, 35);
+
+  // Legend
+  document.getElementById('perfLegend').innerHTML = [
+    {color:'#3C3489', label: fundLabel},
+    {color:'#E24B4A', label: 'Nifty 50 (UTI Index Fund)'},
+  ].map(l => `<div class="perf-legend-item">
+    <div class="perf-legend-dot" style="background:${l.color}"></div>
+    <span style="color:var(--t2)">${l.label}</span>
+  </div>`).join('');
+
+  // Destroy old chart
+  if (perfChart) { perfChart.destroy(); perfChart = null; }
+
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const gridColor = isDark ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.06)';
+  const textColor = isDark ? '#6c6c66' : '#9c9c96';
+
+  perfChart = new Chart(document.getElementById('perfChart'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: fundLabel,
+          data: fundSeries,
+          borderColor: '#3C3489',
+          backgroundColor: 'rgba(60,52,137,.08)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+        {
+          label: 'Nifty 50',
+          data: niftySeries,
+          borderColor: '#E24B4A',
+          backgroundColor: 'rgba(226,75,74,.06)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ctx.dataset.label + ': ' + (ctx.raw.y >= 0 ? '+' : '') + ctx.raw.y.toFixed(2) + '%'
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: perfDays <= 30 ? 'day' : perfDays <= 90 ? 'week' : 'month' },
+          grid: { color: gridColor },
+          ticks: { color: textColor, font: { size: 11 }, maxRotation: 0 }
+        },
+        y: {
+          grid: { color: gridColor },
+          ticks: {
+            color: textColor, font: { size: 11 },
+            callback: v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%'
+          }
+        }
+      }
+    }
+  });
+}
+
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js">
 
@@ -539,6 +857,164 @@ function renderNavCards() {
     </div>
   `;
   document.getElementById('navCompare').style.display = 'block';
+}
+
+
+// ── Nifty vs Fund Performance Chart ───────────────────────────────────────
+const NIFTY_SCHEME_CODE = 120716; // UTI Nifty 50 Index Fund Regular Growth
+let niftyNavData = null;
+let perfChart = null;
+let perfDays = 30;
+
+async function loadNiftyData() {
+  if (niftyNavData) return; // already loaded
+  try {
+    const r = await fetch('https://api.mfapi.in/mf/' + NIFTY_SCHEME_CODE, 
+      {signal: AbortSignal.timeout(8000)});
+    const d = await r.json();
+    niftyNavData = d.data; // [{date, nav}, ...] newest first
+  } catch(e) {}
+}
+
+function parseMfDate(dateStr) {
+  // "27-05-2026" → Date
+  const p = dateStr.split('-');
+  return new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
+}
+
+function indexedSeries(navArr, days) {
+  // Filter to last N days, then index to 100 at start
+  if (!navArr || !navArr.length) return [];
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  
+  // Filter and reverse to get chronological order
+  const filtered = navArr
+    .filter(e => parseMfDate(e.date) >= cutoff)
+    .reverse(); // oldest first
+  
+  if (!filtered.length) return [];
+  const base = parseFloat(filtered[0].nav);
+  return filtered.map(e => ({
+    x: parseMfDate(e.date),
+    y: parseFloat(((parseFloat(e.nav) / base - 1) * 100).toFixed(3))
+  }));
+}
+
+function setPerfPeriod(days, btn) {
+  perfDays = days;
+  document.querySelectorAll('.perf-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderPerfChart();
+}
+
+async function renderPerfChart() {
+  const sec = document.getElementById('perfChartSec');
+  const wrap = document.getElementById('perfChartWrap');
+  const status = document.getElementById('perfStatus');
+
+  if (!navData) {
+    status.textContent = 'Load NAV data above to see the chart.';
+    status.style.display = 'block';
+    wrap.style.display = 'none';
+    return;
+  }
+
+  sec.style.display = 'block';
+  status.textContent = 'Loading Nifty 50 data…';
+  status.style.display = 'block';
+  wrap.style.display = 'none';
+
+  await loadNiftyData();
+
+  const fundSeries  = indexedSeries(navData, perfDays);
+  const niftySeries = indexedSeries(niftyNavData, perfDays);
+
+  if (!fundSeries.length) {
+    status.textContent = 'Not enough NAV history for this period.';
+    return;
+  }
+
+  status.style.display = 'none';
+  wrap.style.display = 'block';
+
+  // Fund name (short)
+  const fundLabel = (document.getElementById('navSchemeName')?.textContent || 'Fund')
+    .replace(/regular plan.*|direct plan.*/i, '').trim().slice(0, 35);
+
+  // Legend
+  document.getElementById('perfLegend').innerHTML = [
+    {color:'#3C3489', label: fundLabel},
+    {color:'#E24B4A', label: 'Nifty 50 (UTI Index Fund)'},
+  ].map(l => `<div class="perf-legend-item">
+    <div class="perf-legend-dot" style="background:${l.color}"></div>
+    <span style="color:var(--t2)">${l.label}</span>
+  </div>`).join('');
+
+  // Destroy old chart
+  if (perfChart) { perfChart.destroy(); perfChart = null; }
+
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const gridColor = isDark ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.06)';
+  const textColor = isDark ? '#6c6c66' : '#9c9c96';
+
+  perfChart = new Chart(document.getElementById('perfChart'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: fundLabel,
+          data: fundSeries,
+          borderColor: '#3C3489',
+          backgroundColor: 'rgba(60,52,137,.08)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+        {
+          label: 'Nifty 50',
+          data: niftySeries,
+          borderColor: '#E24B4A',
+          backgroundColor: 'rgba(226,75,74,.06)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ctx.dataset.label + ': ' + (ctx.raw.y >= 0 ? '+' : '') + ctx.raw.y.toFixed(2) + '%'
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: perfDays <= 30 ? 'day' : perfDays <= 90 ? 'week' : 'month' },
+          grid: { color: gridColor },
+          ticks: { color: textColor, font: { size: 11 }, maxRotation: 0 }
+        },
+        y: {
+          grid: { color: gridColor },
+          ticks: {
+            color: textColor, font: { size: 11 },
+            callback: v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%'
+          }
+        }
+      }
+    }
+  });
 }
 
 </script>
@@ -720,6 +1196,164 @@ function renderNavCards() {
   document.getElementById('navCompare').style.display = 'block';
 }
 
+
+// ── Nifty vs Fund Performance Chart ───────────────────────────────────────
+const NIFTY_SCHEME_CODE = 120716; // UTI Nifty 50 Index Fund Regular Growth
+let niftyNavData = null;
+let perfChart = null;
+let perfDays = 30;
+
+async function loadNiftyData() {
+  if (niftyNavData) return; // already loaded
+  try {
+    const r = await fetch('https://api.mfapi.in/mf/' + NIFTY_SCHEME_CODE, 
+      {signal: AbortSignal.timeout(8000)});
+    const d = await r.json();
+    niftyNavData = d.data; // [{date, nav}, ...] newest first
+  } catch(e) {}
+}
+
+function parseMfDate(dateStr) {
+  // "27-05-2026" → Date
+  const p = dateStr.split('-');
+  return new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
+}
+
+function indexedSeries(navArr, days) {
+  // Filter to last N days, then index to 100 at start
+  if (!navArr || !navArr.length) return [];
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  
+  // Filter and reverse to get chronological order
+  const filtered = navArr
+    .filter(e => parseMfDate(e.date) >= cutoff)
+    .reverse(); // oldest first
+  
+  if (!filtered.length) return [];
+  const base = parseFloat(filtered[0].nav);
+  return filtered.map(e => ({
+    x: parseMfDate(e.date),
+    y: parseFloat(((parseFloat(e.nav) / base - 1) * 100).toFixed(3))
+  }));
+}
+
+function setPerfPeriod(days, btn) {
+  perfDays = days;
+  document.querySelectorAll('.perf-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderPerfChart();
+}
+
+async function renderPerfChart() {
+  const sec = document.getElementById('perfChartSec');
+  const wrap = document.getElementById('perfChartWrap');
+  const status = document.getElementById('perfStatus');
+
+  if (!navData) {
+    status.textContent = 'Load NAV data above to see the chart.';
+    status.style.display = 'block';
+    wrap.style.display = 'none';
+    return;
+  }
+
+  sec.style.display = 'block';
+  status.textContent = 'Loading Nifty 50 data…';
+  status.style.display = 'block';
+  wrap.style.display = 'none';
+
+  await loadNiftyData();
+
+  const fundSeries  = indexedSeries(navData, perfDays);
+  const niftySeries = indexedSeries(niftyNavData, perfDays);
+
+  if (!fundSeries.length) {
+    status.textContent = 'Not enough NAV history for this period.';
+    return;
+  }
+
+  status.style.display = 'none';
+  wrap.style.display = 'block';
+
+  // Fund name (short)
+  const fundLabel = (document.getElementById('navSchemeName')?.textContent || 'Fund')
+    .replace(/regular plan.*|direct plan.*/i, '').trim().slice(0, 35);
+
+  // Legend
+  document.getElementById('perfLegend').innerHTML = [
+    {color:'#3C3489', label: fundLabel},
+    {color:'#E24B4A', label: 'Nifty 50 (UTI Index Fund)'},
+  ].map(l => `<div class="perf-legend-item">
+    <div class="perf-legend-dot" style="background:${l.color}"></div>
+    <span style="color:var(--t2)">${l.label}</span>
+  </div>`).join('');
+
+  // Destroy old chart
+  if (perfChart) { perfChart.destroy(); perfChart = null; }
+
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const gridColor = isDark ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.06)';
+  const textColor = isDark ? '#6c6c66' : '#9c9c96';
+
+  perfChart = new Chart(document.getElementById('perfChart'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: fundLabel,
+          data: fundSeries,
+          borderColor: '#3C3489',
+          backgroundColor: 'rgba(60,52,137,.08)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+        {
+          label: 'Nifty 50',
+          data: niftySeries,
+          borderColor: '#E24B4A',
+          backgroundColor: 'rgba(226,75,74,.06)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ctx.dataset.label + ': ' + (ctx.raw.y >= 0 ? '+' : '') + ctx.raw.y.toFixed(2) + '%'
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: perfDays <= 30 ? 'day' : perfDays <= 90 ? 'week' : 'month' },
+          grid: { color: gridColor },
+          ticks: { color: textColor, font: { size: 11 }, maxRotation: 0 }
+        },
+        y: {
+          grid: { color: gridColor },
+          ticks: {
+            color: textColor, font: { size: 11 },
+            callback: v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%'
+          }
+        }
+      }
+    }
+  });
+}
+
 </script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js">
 
@@ -899,6 +1533,164 @@ function renderNavCards() {
   document.getElementById('navCompare').style.display = 'block';
 }
 
+
+// ── Nifty vs Fund Performance Chart ───────────────────────────────────────
+const NIFTY_SCHEME_CODE = 120716; // UTI Nifty 50 Index Fund Regular Growth
+let niftyNavData = null;
+let perfChart = null;
+let perfDays = 30;
+
+async function loadNiftyData() {
+  if (niftyNavData) return; // already loaded
+  try {
+    const r = await fetch('https://api.mfapi.in/mf/' + NIFTY_SCHEME_CODE, 
+      {signal: AbortSignal.timeout(8000)});
+    const d = await r.json();
+    niftyNavData = d.data; // [{date, nav}, ...] newest first
+  } catch(e) {}
+}
+
+function parseMfDate(dateStr) {
+  // "27-05-2026" → Date
+  const p = dateStr.split('-');
+  return new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
+}
+
+function indexedSeries(navArr, days) {
+  // Filter to last N days, then index to 100 at start
+  if (!navArr || !navArr.length) return [];
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  
+  // Filter and reverse to get chronological order
+  const filtered = navArr
+    .filter(e => parseMfDate(e.date) >= cutoff)
+    .reverse(); // oldest first
+  
+  if (!filtered.length) return [];
+  const base = parseFloat(filtered[0].nav);
+  return filtered.map(e => ({
+    x: parseMfDate(e.date),
+    y: parseFloat(((parseFloat(e.nav) / base - 1) * 100).toFixed(3))
+  }));
+}
+
+function setPerfPeriod(days, btn) {
+  perfDays = days;
+  document.querySelectorAll('.perf-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderPerfChart();
+}
+
+async function renderPerfChart() {
+  const sec = document.getElementById('perfChartSec');
+  const wrap = document.getElementById('perfChartWrap');
+  const status = document.getElementById('perfStatus');
+
+  if (!navData) {
+    status.textContent = 'Load NAV data above to see the chart.';
+    status.style.display = 'block';
+    wrap.style.display = 'none';
+    return;
+  }
+
+  sec.style.display = 'block';
+  status.textContent = 'Loading Nifty 50 data…';
+  status.style.display = 'block';
+  wrap.style.display = 'none';
+
+  await loadNiftyData();
+
+  const fundSeries  = indexedSeries(navData, perfDays);
+  const niftySeries = indexedSeries(niftyNavData, perfDays);
+
+  if (!fundSeries.length) {
+    status.textContent = 'Not enough NAV history for this period.';
+    return;
+  }
+
+  status.style.display = 'none';
+  wrap.style.display = 'block';
+
+  // Fund name (short)
+  const fundLabel = (document.getElementById('navSchemeName')?.textContent || 'Fund')
+    .replace(/regular plan.*|direct plan.*/i, '').trim().slice(0, 35);
+
+  // Legend
+  document.getElementById('perfLegend').innerHTML = [
+    {color:'#3C3489', label: fundLabel},
+    {color:'#E24B4A', label: 'Nifty 50 (UTI Index Fund)'},
+  ].map(l => `<div class="perf-legend-item">
+    <div class="perf-legend-dot" style="background:${l.color}"></div>
+    <span style="color:var(--t2)">${l.label}</span>
+  </div>`).join('');
+
+  // Destroy old chart
+  if (perfChart) { perfChart.destroy(); perfChart = null; }
+
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const gridColor = isDark ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.06)';
+  const textColor = isDark ? '#6c6c66' : '#9c9c96';
+
+  perfChart = new Chart(document.getElementById('perfChart'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: fundLabel,
+          data: fundSeries,
+          borderColor: '#3C3489',
+          backgroundColor: 'rgba(60,52,137,.08)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+        {
+          label: 'Nifty 50',
+          data: niftySeries,
+          borderColor: '#E24B4A',
+          backgroundColor: 'rgba(226,75,74,.06)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ctx.dataset.label + ': ' + (ctx.raw.y >= 0 ? '+' : '') + ctx.raw.y.toFixed(2) + '%'
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: perfDays <= 30 ? 'day' : perfDays <= 90 ? 'week' : 'month' },
+          grid: { color: gridColor },
+          ticks: { color: textColor, font: { size: 11 }, maxRotation: 0 }
+        },
+        y: {
+          grid: { color: gridColor },
+          ticks: {
+            color: textColor, font: { size: 11 },
+            callback: v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%'
+          }
+        }
+      }
+    }
+  });
+}
+
 </script>
 <style>
 :root{
@@ -1048,7 +1840,18 @@ footer{text-align:center;font-size:11px;color:var(--t3);margin-top:2rem;font-fam
 .nav-card .nc-sub{font-size:11px;color:var(--t2);margin-top:.2rem;font-family:sans-serif}
 .nav-card.up .nc-val{color:var(--green)}.nav-card.down .nc-val{color:var(--red)}.nav-card.neu .nc-val{color:var(--text)}
 .nav-scheme-name{font-size:11px;color:var(--t3);font-family:sans-serif;margin-bottom:.6rem;font-style:italic}
+
+.perf-chart-sec{background:var(--surface);border:.5px solid var(--border);border-radius:var(--rl);padding:1.25rem;margin-bottom:1.5rem}
+.perf-chart-sec h3{font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.07em;color:var(--t3);margin-bottom:.85rem;font-family:sans-serif;display:flex;align-items:center;justify-content:space-between}
+.perf-period-tabs{display:flex;gap:4px}
+.perf-ptab{padding:.2rem .6rem;border-radius:20px;border:.5px solid var(--bm);background:var(--surface);font-size:11px;font-family:sans-serif;color:var(--t2);cursor:pointer}
+.perf-ptab.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+.perf-legend{display:flex;gap:1rem;margin-bottom:.85rem;font-family:sans-serif;font-size:12px;flex-wrap:wrap}
+.perf-legend-item{display:flex;align-items:center;gap:6px}
+.perf-legend-dot{width:10px;height:10px;border-radius:50%;flex-shrink:0}
+.perf-status{font-size:12px;color:var(--t3);font-family:sans-serif;font-style:italic;text-align:center;padding:2rem 0}
 </style>
+<script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
 </head>
 <body>
 <div class="shell">
@@ -1178,6 +1981,24 @@ footer{text-align:center;font-size:11px;color:var(--t3);margin-top:2rem;font-fam
     <div class="nav-scheme-name" id="navSchemeName"></div>
     <div class="nav-cards" id="navCards"></div>
   </div>
+
+  <!-- Nifty vs Fund Performance Chart -->
+  <div class="perf-chart-sec" id="perfChartSec" style="display:none">
+    <h3>
+      <span><i class="ti ti-chart-line" style="font-size:11px;margin-right:4px"></i>Fund vs Nifty 50 — Indexed Performance</span>
+      <div class="perf-period-tabs">
+        <button class="perf-ptab active" onclick="setPerfPeriod(30,this)">1M</button>
+        <button class="perf-ptab" onclick="setPerfPeriod(90,this)">3M</button>
+        <button class="perf-ptab" onclick="setPerfPeriod(180,this)">6M</button>
+        <button class="perf-ptab" onclick="setPerfPeriod(365,this)">1Y</button>
+      </div>
+    </h3>
+    <div class="perf-legend" id="perfLegend"></div>
+    <div id="perfStatus" class="perf-status">Load NAV data above to see the chart.</div>
+    <div style="position:relative;height:300px;display:none" id="perfChartWrap">
+      <canvas id="perfChart"></canvas>
+    </div>
+  </div>
   <div class="metrics" id="metrics"></div>
   <div class="movers" id="movers"></div>
   <div class="pbar-sec"><h3>All periods</h3><div id="prows"></div></div>
@@ -1210,32 +2031,32 @@ pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs
 // ── ISIN → NSE symbol ──────────────────────────────────────────────────────
 const ISIN_NSE = {
   'INE002A01018':'RELIANCE','INE009A01021':'INFY','INE010B01027':'ZYDUSLIFE',
-  'INE018A01030':'LT','INE019A01038':'TECHM','INE020B01018':'ICICIGI',
+  'INE018A01030':'LT','INE019A01038':'JSWSTEEL','INE020B01018':'ICICIGI',
   'INE028A01039':'BANKBARODA','INE030A01027':'HINDUNILVR','INE032A01023':'TVSMOTOR',
   'INE040A01026':'HDFCBANK','INE040A01034':'HDFCBANK','INE044A01036':'SUNPHARMA',
   'INE053A01029':'BPCL','INE059A01026':'CIPLA','INE061F01013':'FORTIS',
-  'INE062A01020':'DRREDDY','INE070A01015':'HINDALCO','INE079A01024':'AMBUJACEM',
+  'INE062A01020':'SBIN','INE070A01015':'HINDALCO','INE079A01024':'AMBUJACEM',
   'INE081A01020':'TATASTEEL','INE089A01023':'TORNTPHARM','INE090A01021':'ICICIBANK',
   'INE095A01012':'INDUSINDBK','INE0GXK01011':'ADANIGREEN','INE101A01026':'M&M',
   'INE102D01028':'GODREJCP','INE108V01019':'AWFIS','INE114A01011':'SAIL',
   'INE120A01034':'MUTHOOTFIN','INE123W01016':'SBILIFE','INE129A01019':'GAIL',
   'INE148I01020':'NAUKRI','INE154A01025':'ITC','INE155A01022':'TATAPOWER',
   'INE160A01022':'PNB','INE192R01011':'DMART','INE200M01021':'POLYCAB',
-  'INE202E01016':'RECLTD','INE205A01025':'COLPAL','INE208A01029':'IDFCFIRSTB',
-  'INE213A01029':'AXISBANK','INE226A01021':'HEROMOTOCO','INE237A01028':'KOTAKBANK',
+  'INE202E01016':'RECLTD','INE205A01025':'VEDL','INE208A01029':'IDFCFIRSTB',
+  'INE213A01029':'ONGC','INE226A01021':'HEROMOTOCO','INE237A01028':'KOTAKBANK',
   'INE238A01034':'AXISBANK','INE247A01021':'GRASIM','INE261F01014':'TATACOMM',
   'INE284S01014':'SJSENTERPR','INE296A01024':'BAJFINANCE','INE303R01014':'CROMPTON',
   'INE306A01021':'HAVELLS','INE342J01019':'LTIM','INE356A01018':'SIEMENS',
   'INE364A01020':'DIVISLAB','INE383C01021':'GODREJPROP','INE397D01016':'BHARTIARTL',
-  'INE397D01024':'BHARTIARTL','INE406A01037':'HDFCLIFE','INE423A01024':'DABUR',
+  'INE397D01024':'BHARTIARTL','INE406A01037':'AUROPHARMA','INE423A01024':'DABUR',
   'INE437A01024':'APOLLOHOSP','INE467B01029':'TCS','INE476A01022':'CANBK',
-  'INE481G01011':'ULTRACEMCO','INE492A01021':'UNIONBANK','INE494B01023':'PERSISTENT',
-  'INE528G01019':'POWERGRID','INE545U01014':'ADANIPOWER','INE585B01010':'SBIN',
+  'INE481G01011':'ULTRACEMCO','INE492A01021':'UNIONBANK','INE494B01023':'TVSMOTOR',
+  'INE528G01019':'POWERGRID','INE545U01014':'ADANIPOWER','INE585B01010':'MARUTI',
   'INE647O01011':'ZOMATO','INE669C01036':'ADANIENT','INE721A01013':'SHRIRAMFIN',
   'INE733E01010':'NTPC','INE742F01042':'ADANIPORTS','INE749A01020':'WIPRO',
-  'INE758E01017':'TITAN','INE758T01015':'LICI','INE761H01022':'LALPATHLAB',
-  'INE765G01017':'HDFCLIFE','INE774D01024':'CHOLAFIN','INE811K01011':'MARICO',
-  'INE854D01024':'MCDOWELL-N','INE860A01027':'HCLTECH','INE917I01010':'BAJAJFINSV',
+  'INE758E01017':'TITAN','INE758T01015':'ZOMATO','INE761H01022':'LALPATHLAB',
+  'INE765G01017':'HDFCLIFE','INE774D01024':'CHOLAFIN','INE811K01011':'PRESTIGE',
+  'INE854D01024':'MCDOWELL-N','INE860A01027':'HCLTECH','INE917I01010':'BAJAJAUTO',
   'INE364U01010':'PAYTM','INE212H01026':'PIIND','INE171A01029':'MCDOWELL-N',
 };
 
@@ -1342,6 +2163,43 @@ document.getElementById('pfDrop').addEventListener('drop',e=>{
   if(e.dataTransfer.files[0])handlePfFile(e.dataTransfer.files[0]);
 });
 
+function extractFundName() {
+  // Use rawSheetTop (top rows before header) for Excel files
+  const searchRows = rawSheetTop.length ? rawSheetTop : rawRows.slice(0,5);
+  for (const row of searchRows) {
+    for (const cell of row) {
+      const s = String(cell||'').trim();
+      if (s.length > 10 && /fund|mutual|scheme|asset/i.test(s) && !/^[0-9]/.test(s)) {
+        return s.split(/[-–(]/)[0].trim();
+      }
+    }
+  }
+  return null;
+}
+
+async function autoFetchNav(fundName) {
+  if (!fundName) return;
+  try {
+    const r = await fetch('https://api.mfapi.in/mf/search?q=' + encodeURIComponent(fundName), 
+      {signal: AbortSignal.timeout(5000)});
+    const results = await r.json();
+    if (!results || !results.length) return;
+    // Pick the first Regular Plan Growth result, or just first result
+    const pick = results.find(f => /regular.*growth|growth.*regular/i.test(f.schemeName)) || results[0];
+    navSchemeCode = pick.schemeCode;
+    document.getElementById('navInput').value = pick.schemeName;
+    // Auto load without showing search dropdown
+    const nr = await fetch('https://api.mfapi.in/mf/' + navSchemeCode, 
+      {signal: AbortSignal.timeout(8000)});
+    const d = await nr.json();
+    navData = d.data;
+    document.getElementById('navSchemeName').textContent = d.meta?.scheme_name || '';
+    renderNavCards();
+  } catch(e) {
+    // Silently fail — user can search manually
+  }
+}
+
 async function handlePfFile(file){
   clearNotes();st('Reading '+file.name+'…');
   try{
@@ -1359,6 +2217,13 @@ async function handlePfFile(file){
     document.getElementById('pfPreview').style.display='block';
     buildPreview();
     checkEnableAnalyse();
+    // Auto-detect fund name and fetch NAV
+    const fundName = extractFundName();
+    if (fundName) {
+      document.getElementById('navInput').value = 'Searching: ' + fundName + '…';
+      document.getElementById('navCompare').style.display = 'block';
+      autoFetchNav(fundName);
+    }
   }catch(e){stOff();errNote('Could not read file: '+e.message);}
 }
 
@@ -1384,12 +2249,16 @@ function parsePfCSV(file){
   });
 }
 
+let rawSheetTop = []; // First few rows of sheet for fund name detection
+
 async function parsePfExcel(file){
   const ab=await file.arrayBuffer();
   const wb=XLSX.read(ab,{type:'array'});
   const ws=wb.Sheets[wb.SheetNames[0]];
   const data=XLSX.utils.sheet_to_json(ws,{header:1,defval:''});
   if(data.length<2)throw new Error('Sheet appears empty');
+  // Store top rows for fund name detection
+  rawSheetTop = data.slice(0,8).map(r=>r.map(c=>String(c||'').trim()));
   const hr=findHeaderRow(data);
   rawHeaders=data[hr].map(c=>String(c).trim());
   rawRows=data.slice(hr+1).filter(r=>r.some(c=>c!=='')).map(r=>rawHeaders.map((_,i)=>String(r[i]||'').trim()));
@@ -1568,7 +2437,10 @@ async function runAnalysis(){
   render();
   document.getElementById('results').classList.add('show');
   document.getElementById('navCompare').style.display = 'block';
+  document.getElementById('perfChartSec').style.display = 'block';
   document.getElementById('results').scrollIntoView({behavior:'smooth',block:'start'});
+  // Render chart if NAV data available
+  if (navData) renderPerfChart();
 
 }
 
@@ -1859,6 +2731,164 @@ function renderNavCards() {
     </div>
   `;
   document.getElementById('navCompare').style.display = 'block';
+}
+
+
+// ── Nifty vs Fund Performance Chart ───────────────────────────────────────
+const NIFTY_SCHEME_CODE = 120716; // UTI Nifty 50 Index Fund Regular Growth
+let niftyNavData = null;
+let perfChart = null;
+let perfDays = 30;
+
+async function loadNiftyData() {
+  if (niftyNavData) return; // already loaded
+  try {
+    const r = await fetch('https://api.mfapi.in/mf/' + NIFTY_SCHEME_CODE, 
+      {signal: AbortSignal.timeout(8000)});
+    const d = await r.json();
+    niftyNavData = d.data; // [{date, nav}, ...] newest first
+  } catch(e) {}
+}
+
+function parseMfDate(dateStr) {
+  // "27-05-2026" → Date
+  const p = dateStr.split('-');
+  return new Date(parseInt(p[2]), parseInt(p[1])-1, parseInt(p[0]));
+}
+
+function indexedSeries(navArr, days) {
+  // Filter to last N days, then index to 100 at start
+  if (!navArr || !navArr.length) return [];
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days);
+  
+  // Filter and reverse to get chronological order
+  const filtered = navArr
+    .filter(e => parseMfDate(e.date) >= cutoff)
+    .reverse(); // oldest first
+  
+  if (!filtered.length) return [];
+  const base = parseFloat(filtered[0].nav);
+  return filtered.map(e => ({
+    x: parseMfDate(e.date),
+    y: parseFloat(((parseFloat(e.nav) / base - 1) * 100).toFixed(3))
+  }));
+}
+
+function setPerfPeriod(days, btn) {
+  perfDays = days;
+  document.querySelectorAll('.perf-ptab').forEach(b => b.classList.remove('active'));
+  btn.classList.add('active');
+  renderPerfChart();
+}
+
+async function renderPerfChart() {
+  const sec = document.getElementById('perfChartSec');
+  const wrap = document.getElementById('perfChartWrap');
+  const status = document.getElementById('perfStatus');
+
+  if (!navData) {
+    status.textContent = 'Load NAV data above to see the chart.';
+    status.style.display = 'block';
+    wrap.style.display = 'none';
+    return;
+  }
+
+  sec.style.display = 'block';
+  status.textContent = 'Loading Nifty 50 data…';
+  status.style.display = 'block';
+  wrap.style.display = 'none';
+
+  await loadNiftyData();
+
+  const fundSeries  = indexedSeries(navData, perfDays);
+  const niftySeries = indexedSeries(niftyNavData, perfDays);
+
+  if (!fundSeries.length) {
+    status.textContent = 'Not enough NAV history for this period.';
+    return;
+  }
+
+  status.style.display = 'none';
+  wrap.style.display = 'block';
+
+  // Fund name (short)
+  const fundLabel = (document.getElementById('navSchemeName')?.textContent || 'Fund')
+    .replace(/regular plan.*|direct plan.*/i, '').trim().slice(0, 35);
+
+  // Legend
+  document.getElementById('perfLegend').innerHTML = [
+    {color:'#3C3489', label: fundLabel},
+    {color:'#E24B4A', label: 'Nifty 50 (UTI Index Fund)'},
+  ].map(l => `<div class="perf-legend-item">
+    <div class="perf-legend-dot" style="background:${l.color}"></div>
+    <span style="color:var(--t2)">${l.label}</span>
+  </div>`).join('');
+
+  // Destroy old chart
+  if (perfChart) { perfChart.destroy(); perfChart = null; }
+
+  const isDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
+  const gridColor = isDark ? 'rgba(255,255,255,.06)' : 'rgba(0,0,0,.06)';
+  const textColor = isDark ? '#6c6c66' : '#9c9c96';
+
+  perfChart = new Chart(document.getElementById('perfChart'), {
+    type: 'line',
+    data: {
+      datasets: [
+        {
+          label: fundLabel,
+          data: fundSeries,
+          borderColor: '#3C3489',
+          backgroundColor: 'rgba(60,52,137,.08)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+        {
+          label: 'Nifty 50',
+          data: niftySeries,
+          borderColor: '#E24B4A',
+          backgroundColor: 'rgba(226,75,74,.06)',
+          borderWidth: 2,
+          pointRadius: 0,
+          pointHoverRadius: 4,
+          fill: true,
+          tension: 0.3,
+        },
+      ]
+    },
+    options: {
+      responsive: true,
+      maintainAspectRatio: false,
+      interaction: { mode: 'index', intersect: false },
+      plugins: {
+        legend: { display: false },
+        tooltip: {
+          callbacks: {
+            label: ctx => ctx.dataset.label + ': ' + (ctx.raw.y >= 0 ? '+' : '') + ctx.raw.y.toFixed(2) + '%'
+          }
+        }
+      },
+      scales: {
+        x: {
+          type: 'time',
+          time: { unit: perfDays <= 30 ? 'day' : perfDays <= 90 ? 'week' : 'month' },
+          grid: { color: gridColor },
+          ticks: { color: textColor, font: { size: 11 }, maxRotation: 0 }
+        },
+        y: {
+          grid: { color: gridColor },
+          ticks: {
+            color: textColor, font: { size: 11 },
+            callback: v => (v >= 0 ? '+' : '') + v.toFixed(1) + '%'
+          }
+        }
+      }
+    }
+  });
 }
 
 </script>
