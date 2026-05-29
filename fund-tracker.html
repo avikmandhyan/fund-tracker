@@ -2046,7 +2046,7 @@ const ISIN_NSE = {
   'INE213A01029':'ONGC','INE226A01021':'HEROMOTOCO','INE237A01028':'KOTAKBANK',
   'INE238A01034':'AXISBANK','INE247A01021':'GRASIM','INE261F01014':'TATACOMM',
   'INE284S01014':'SJSENTERPR','INE296A01024':'BAJFINANCE','INE303R01014':'CROMPTON',
-  'INE306A01021':'HAVELLS','INE342J01019':'LTIM','INE356A01018':'SIEMENS',
+  'INE306A01021':'HAVELLS','INE342J01019':'LTIM','INE356A01018':'MPHASIS',
   'INE364A01020':'DIVISLAB','INE383C01021':'GODREJPROP','INE397D01016':'BHARTIARTL',
   'INE397D01024':'BHARTIARTL','INE406A01037':'AUROPHARMA','INE423A01024':'DABUR',
   'INE437A01024':'APOLLOHOSP','INE467B01029':'TCS','INE476A01022':'CANBK',
@@ -2439,8 +2439,8 @@ async function runAnalysis(){
   document.getElementById('navCompare').style.display = 'block';
   document.getElementById('perfChartSec').style.display = 'block';
   document.getElementById('results').scrollIntoView({behavior:'smooth',block:'start'});
-  // Render chart if NAV data available
-  if (navData) renderPerfChart();
+  // Refresh NAV cards with equity data now that portfolio is built
+  if (navData) { renderNavCards(); renderPerfChart(); }
 
 }
 
